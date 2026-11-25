@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: delivery
+
+management:
+  endpoints:
+    web:
+      base-path: /api/v1/system
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      show-components: never

@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+target/
+node_modules/
+/web/dist/
+*.tsbuildinfo
+.venv/
+__pycache__/
+.pytest_cache/
+.idea/
+*.iml
+*.log
+/.archive/

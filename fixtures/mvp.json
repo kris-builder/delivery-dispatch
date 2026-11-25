@@ -1,0 +1,33 @@
+{
+  "businessDate": "2026-11-25",
+  "organization": {
+    "code": "JIANGAN-DEMO",
+    "name": "江岸网点（演示）",
+    "kind": "NETWORK",
+    "timezone": "Asia/Shanghai"
+  },
+  "shift": { "code": "MORNING", "name": "上午班" },
+  "areas": [
+    { "code": "EAST", "name": "东片区", "street": "后湖大道", "community": "百步亭花园", "courier": "courier-chen" },
+    { "code": "WEST", "name": "西片区", "street": "安居路", "community": "安居苑", "courier": "courier-liu" }
+  ],
+  "employees": [
+    { "loginName": "operator-xu", "displayName": "许楠", "role": "NETWORK_OPERATOR" },
+    { "loginName": "dispatcher-zhou", "displayName": "周岩", "role": "NETWORK_DISPATCHER" },
+    { "loginName": "courier-chen", "displayName": "陈立", "role": "NETWORK_COURIER" },
+    { "loginName": "courier-liu", "displayName": "刘洋", "role": "NETWORK_COURIER" }
+  ],
+  "recipients": [
+    { "code": "recipient-a", "phone": "+8610000000101" },
+    { "code": "recipient-b", "phone": "+8610000000102" }
+  ],
+  "inboundBatch": {
+    "code": "DEMO-1125-01",
+    "parcels": [
+      { "waybillNo": "000726050018", "recipient": "recipient-a", "street": "后湖大道", "community": "百步亭花园", "case": "DIRECT_DELIVERY" },
+      { "waybillNo": "000726050021", "recipient": "recipient-a", "street": "金桥大道", "community": "待补分小区", "case": "PENDING_AREA" },
+      { "waybillNo": "000726050026", "recipient": "recipient-a", "street": "安居路", "community": "安居苑", "case": "STATION_RETURN" },
+      { "waybillNo": "000726050031", "recipient": "recipient-b", "street": "安居路", "community": "安居苑", "case": "OTHER_RECIPIENT" }
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+spring:
+  config:
+    import: optional:file:../.env[.properties]
+  datasource:
+    url: jdbc:mysql://127.0.0.1:${MYSQL_HOST_PORT:3308}/${MYSQL_DATABASE:delivery_local}?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
+    username: ${MYSQL_USER:delivery_app}
+    password: ${MYSQL_PASSWORD}
+
+server:
+  address: 127.0.0.1
+  port: ${DELIVERY_API_PORT:8080}
