@@ -1,0 +1,45 @@
+{
+  "organizationName": "江岸网点（演示）",
+  "timeZone": "Asia/Shanghai",
+  "at": "2026-11-25T00:00:00Z",
+  "areas": {
+    "items": [
+      {
+        "id": "201",
+        "code": "EAST",
+        "name": "东片区",
+        "active": true,
+        "regularWorker": { "id": "301", "displayName": "陈立" }
+      },
+      {
+        "id": "202",
+        "code": "WEST",
+        "name": "西片区",
+        "active": true,
+        "regularWorker": { "id": "302", "displayName": "刘洋" }
+      }
+    ],
+    "page": 1,
+    "pageSize": 20,
+    "total": 2
+  },
+  "workers": {
+    "onDuty": {
+      "items": [
+        { "id": "301", "displayName": "陈立" },
+        { "id": "302", "displayName": "刘洋" }
+      ],
+      "page": 1,
+      "pageSize": 20,
+      "total": 2
+    },
+    "onLeave": {
+      "items": [
+        { "id": "302", "displayName": "刘洋" }
+      ],
+      "page": 1,
+      "pageSize": 20,
+      "total": 1
+    }
+  }
+}

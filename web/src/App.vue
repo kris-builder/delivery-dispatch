@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ApiError, requestJson } from './api'
+import StationQueryPanel from './StationQueryPanel.vue'
 import fixture from '../../fixtures/mvp.json'
 
 const status = ref('等待检查')
@@ -33,7 +34,8 @@ onMounted(checkConnection)
 <template>
   <header class="top"><strong>末端配送</strong><span>开发联调</span></header>
   <main>
-    <h1>开工检查</h1>
+    <h1>网点调度</h1>
+    <StationQueryPanel />
     <section class="panel connection" aria-labelledby="connection-title">
       <div>
         <h2 id="connection-title">服务连接</h2>
