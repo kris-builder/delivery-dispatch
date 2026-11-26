@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ApiError, postJson, requestJson } from './api'
+import { createStationTime } from './stationTime'
 
 interface Page<T> { items: T[]; page: number; pageSize: number; total: number }
 interface Courier { id: string; displayName: string }
@@ -17,9 +18,7 @@ interface Member {
 
 const props = defineProps<{ at: string; timeZone: string }>()
 const emit = defineEmits<{ updated: []; sessionExpired: [] }>()
-const formatTime = new Intl.DateTimeFormat('zh-CN', {
-  timeZone: props.timeZone, timeStyle: 'short', dateStyle: 'medium', hourCycle: 'h23',
-})
+const stationTime = createStationTime(props.timeZone)
 const lifetime = new AbortController()
 let memberRequest: AbortController | undefined
 const members = ref<Page<Member> | null>(null)
@@ -95,15 +94,20 @@ async function save(action: () => Promise<unknown>, success: string, refreshOnCo
 }
 
 async function schedule() {
-  const start = new Date(`${startsAt.value}Z`)
-  const end = new Date(`${endsAt.value}Z`)
-  if (!(start.getTime() < end.getTime()) || !code.value.trim() || !workerId.value) {
+  const start = stationTime.fromInput(startsAt.value)
+  const end = stationTime.fromInput(endsAt.value)
+  if (!start || !end) {
+    confirmation.value = ''
+    writeError.value = '请选择有效的网点时间。遇到时钟切换时，请改选其他时间。'
+    return
+  }
+  if (Date.parse(start) >= Date.parse(end) || !code.value.trim() || !workerId.value) {
     confirmation.value = ''
     writeError.value = '请选择配送员、填写班次名称，并确认开始时间早于结束时间。'
     return
   }
   await save(() => postJson('/staff/shifts', {
-    workerId: workerId.value, code: code.value.trim(), startsAt: start.toISOString(), endsAt: end.toISOString(),
+    workerId: workerId.value, code: code.value.trim(), startsAt: start, endsAt: end,
   }), '班次已登记。')
 }
 
@@ -135,7 +139,7 @@ onBeforeUnmount(() => {
       <li v-for="member in members.items" :key="`${member.shiftId}/${member.workerId}`">
         <div>
           <strong>{{ member.displayName }}</strong> · {{ member.code }} · {{ member.status === 'ON_LEAVE' ? '请假' : '在岗' }}
-          <div>{{ formatTime.format(new Date(member.startsAt)) }} 至 {{ formatTime.format(new Date(member.endsAt)) }}</div>
+          <div>{{ stationTime.formatRange(member.startsAt, member.endsAt) }}</div>
         </div>
         <button
           type="button" :disabled="saving || memberLoading || !!memberError"
@@ -159,8 +163,8 @@ onBeforeUnmount(() => {
           </select>
         </label>
         <label>班次名称 <input v-model="code" required maxlength="32"></label>
-        <label>开始时间（UTC） <input v-model="startsAt" type="datetime-local" required></label>
-        <label>结束时间（UTC） <input v-model="endsAt" type="datetime-local" required></label>
+        <label>开始时间（网点时间） <input v-model="startsAt" type="datetime-local" required></label>
+        <label>结束时间（网点时间） <input v-model="endsAt" type="datetime-local" required></label>
         <div v-if="couriers && couriers.total > couriers.pageSize" class="actions">
           <button type="button" :disabled="courierLoading || saving || couriers.page <= 1" @click="loadCouriers(couriers.page - 1)">人员上一页</button>
           <button type="button" :disabled="courierLoading || saving || couriers.page * couriers.pageSize >= couriers.total" @click="loadCouriers(couriers.page + 1)">人员下一页</button>
