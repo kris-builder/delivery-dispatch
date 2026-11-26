@@ -2,12 +2,10 @@ package org.example.delivery.station;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
 import java.util.Map;
 
 import org.example.delivery.station.StationQueries.StaffContext;
+import org.example.delivery.time.BeijingTime;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -23,9 +21,12 @@ public class StationScheduling {
     }
 
     public long schedule(StaffContext staff, long actorId, long workerId, String code, Instant startsAt, Instant endsAt) {
-        String timezone = StationAccess.requireNetworkStaff(jdbc, staff, true);
-        LocalDateTime start = utcTimestamp(startsAt);
-        LocalDateTime end = utcTimestamp(endsAt);
+        StationAccess.requireNetworkStaff(jdbc, staff, true);
+        if (startsAt == null || endsAt == null) {
+            throw new IllegalArgumentException("Shift start and end are required");
+        }
+        LocalDateTime start = BeijingTime.forDatabase(startsAt);
+        LocalDateTime end = BeijingTime.forDatabase(endsAt);
         if (!start.isBefore(end)) {
             throw new IllegalArgumentException("Shift start must be earlier than its end");
         }
@@ -46,7 +47,7 @@ public class StationScheduling {
             throw new ScheduleConflictException("Courier already has an overlapping shift");
         }
 
-        var day = startsAt.atZone(ZoneId.of(timezone)).toLocalDate();
+        var day = start.toLocalDate();
         var parameters = Map.of("unitId", staff.unitId(), "day", day, "code", code, "start", start, "end", end);
         jdbc.sql("""
                 INSERT INTO duty_shift (unit_id, service_date, code, starts_at, ends_at)
@@ -102,13 +103,6 @@ public class StationScheduling {
                 """).param("workerId", workerId).param("unitId", staff.unitId())
                 .query(Long.class).optional()
                 .orElseThrow(() -> new SecurityException("An active courier from this network is required"));
-    }
-
-    private static LocalDateTime utcTimestamp(Instant time) {
-        if (time == null) {
-            throw new IllegalArgumentException("Shift start and end are required");
-        }
-        return LocalDateTime.ofInstant(time, ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
     }
 
     public enum DutyStatus { ON_DUTY, ON_LEAVE }

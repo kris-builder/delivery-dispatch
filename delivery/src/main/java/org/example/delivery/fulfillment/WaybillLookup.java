@@ -1,13 +1,13 @@
 package org.example.delivery.fulfillment;
 
-import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.OffsetDateTime;
 import java.util.List;
 
 import org.example.delivery.fulfillment.InboundAreaMatcher.PendingReason;
 import org.example.delivery.fulfillment.InboundReceipts.ReceiptArea;
 import org.example.delivery.identity.EmployeePrincipal;
+import org.example.delivery.time.BeijingTime;
 import org.example.delivery.web.ApiProblems;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -40,7 +40,7 @@ class WaybillLookup {
                     String areaId = row.getString("address_area_id");
                     String reason = row.getString("pending_area_reason");
                     return new Parcel(row.getLong("id"), row.getString("waybill_no"),
-                            received == null ? null : received.toInstant(ZoneOffset.UTC),
+                            received == null ? null : BeijingTime.fromDatabase(received),
                             batchId == null ? null : new Batch(batchId, row.getString("source_batch_no")),
                             received == null || areaId == null ? null : new ReceiptArea(areaId, row.getString("address_area_name")),
                             received == null || reason == null ? null : PendingReason.valueOf(reason));
@@ -58,7 +58,7 @@ class WaybillLookup {
                 WHERE parcel_id = :parcel AND actor_unit_id = :unit ORDER BY occurred_at, id
                 """).param("parcel", parcel.id()).param("unit", employee.unitId())
                 .query((row, index) -> new Event(row.getString("event_type"),
-                        row.getObject("occurred_at", LocalDateTime.class).toInstant(ZoneOffset.UTC))).list();
+                        BeijingTime.fromDatabase(row.getObject("occurred_at", LocalDateTime.class)))).list();
         Status status = parcel.firstReceivedAt() == null ? Status.EXPECTED
                 : parcel.area() == null ? Status.PENDING_AREA : Status.RECEIVED;
         return new Result(parcel.waybillNo(), status, parcel.firstReceivedAt(), parcel.receivedBatch(),
@@ -66,10 +66,10 @@ class WaybillLookup {
     }
 
     enum Status { EXPECTED, PENDING_AREA, RECEIVED }
-    private record Parcel(long id, String waybillNo, Instant firstReceivedAt, Batch receivedBatch,
+    private record Parcel(long id, String waybillNo, OffsetDateTime firstReceivedAt, Batch receivedBatch,
                           ReceiptArea area, PendingReason pendingAreaReason) {}
     record Batch(String id, String sourceBatchNo) {}
-    record Event(String type, Instant occurredAt) {}
-    record Result(String waybillNo, Status status, Instant firstReceivedAt, Batch receivedBatch,
+    record Event(String type, OffsetDateTime occurredAt) {}
+    record Result(String waybillNo, Status status, OffsetDateTime firstReceivedAt, Batch receivedBatch,
                   ReceiptArea area, PendingReason pendingAreaReason, List<Batch> expectedBatches, List<Event> events) {}
 }

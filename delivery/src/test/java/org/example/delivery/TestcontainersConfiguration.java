@@ -12,7 +12,8 @@ class TestcontainersConfiguration {
     @Bean
     @ServiceConnection
     MySQLContainer mysqlContainer() {
-        return new MySQLContainer(DockerImageName.parse("mysql:8.4.13"));
+        return new MySQLContainer(DockerImageName.parse("mysql:8.4.13"))
+                .withCommand("--default-time-zone=+08:00");
     }
 
 }

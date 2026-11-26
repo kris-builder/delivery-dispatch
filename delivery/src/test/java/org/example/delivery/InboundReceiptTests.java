@@ -3,6 +3,9 @@ package org.example.delivery;
 import java.io.IOException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -71,10 +74,16 @@ class InboundReceiptTests {
             var assigned = expect(200, dispatcher.get(lookup("00060001")));
             assertEquals("00060001", assigned.path("waybillNo").asText());
             assertEquals(receipt.path("receivedAt"), assigned.path("firstReceivedAt"));
+            var receivedAt = OffsetDateTime.parse(receipt.path("receivedAt").asText());
+            assertEquals(ZoneOffset.ofHours(8), receivedAt.getOffset());
+            assertEquals(receivedAt.toLocalDateTime(), jdbc.sql("""
+                    SELECT received_at FROM inbound_receipt WHERE id = :id
+                    """).param("id", receipt.path("receiptId").asText()).query(LocalDateTime.class).single());
             assertEquals(batch, assigned.path("receivedBatch").path("id").asText());
             assertEquals("LOOKUP-STATES", assigned.path("receivedBatch").path("sourceBatchNo").asText());
             assertEquals("东片区", assigned.path("area").path("name").asText());
             assertEquals("INBOUND_RECEIVED", assigned.path("events").get(0).path("type").asText());
+            assertEquals(receipt.path("receivedAt"), assigned.path("events").get(0).path("occurredAt"));
             var pending = expect(200, operator.get(lookup("00060002")));
             assertEquals("PENDING_AREA", pending.path("status").asText());
             assertEquals("NO_EFFECTIVE_RULE", pending.path("pendingAreaReason").asText());

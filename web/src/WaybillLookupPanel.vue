@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { ApiError, requestJson } from './api'
 import { pendingAreaReasons, type PendingAreaReason } from './inboundAreaReasons'
+import { BEIJING_ZONE } from './stationTime'
 
 interface Batch {
   id: string
@@ -19,13 +20,15 @@ interface Waybill {
   events: { type: string; occurredAt: string }[]
 }
 
-const props = defineProps<{ timeZone: string }>()
 const emit = defineEmits<{ sessionExpired: [] }>()
 const waybillNo = ref('')
 const result = ref<Waybill | null>(null)
 const loading = ref(false)
 const error = ref('')
 const statuses = { EXPECTED: '仅应到', PENDING_AREA: '已实收待补分', RECEIVED: '已实收已分区' }
+const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  dateStyle: 'medium', timeStyle: 'medium', timeZone: BEIJING_ZONE,
+})
 
 async function lookup() {
   const waybill = waybillNo.value.trim()
@@ -45,9 +48,7 @@ async function lookup() {
 }
 
 function formatTime(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium', timeStyle: 'medium', timeZone: props.timeZone,
-  }).format(new Date(value))
+  return timeFormatter.format(new Date(value))
 }
 </script>
 

@@ -1,11 +1,8 @@
 package org.example.delivery.fulfillment;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
-import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
+import java.time.OffsetDateTime;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
@@ -13,6 +10,7 @@ import java.util.Optional;
 import org.example.delivery.fulfillment.InboundAreaMatcher.Match;
 import org.example.delivery.fulfillment.InboundAreaMatcher.PendingReason;
 import org.example.delivery.identity.EmployeePrincipal;
+import org.example.delivery.time.BeijingTime;
 import org.example.delivery.web.ApiProblems;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.RowMapper;
@@ -35,7 +33,7 @@ class InboundReceipts {
         String areaId = row.getString("address_area_id");
         String reason = row.getString("pending_area_reason");
         return new Receipt(areaId == null ? "PENDING_AREA" : "RECEIVED", row.getString("id"), row.getString("batch_id"),
-                row.getString("waybill_no"), toInstant(row.getObject("received_at", LocalDateTime.class)),
+                row.getString("waybill_no"), BeijingTime.fromDatabase(row.getObject("received_at", LocalDateTime.class)),
                 row.getString("received_by"), areaId == null ? null : new ReceiptArea(areaId, row.getString("address_area_name")),
                 reason == null ? null : PendingReason.valueOf(reason), row.getObject("voided_at") != null);
     };
@@ -70,7 +68,7 @@ class InboundReceipts {
                 .orElseThrow(InboundReceipts::unlisted);
         var active = jdbc.sql(RECEIPTS + " WHERE r.active_parcel_id = :parcel")
                 .param("parcel", parcelId).query(RECEIPT_MAPPER).optional();
-        LocalDateTime now = LocalDateTime.now(Clock.systemUTC()).truncatedTo(ChronoUnit.MICROS);
+        LocalDateTime now = BeijingTime.now();
         Operation response = active.isPresent()
                 ? new Operation(200, active.get().asDuplicate())
                 : new Operation(201, createReceipt(employee, batchId, parcelId, waybill, operation.id(), now));
@@ -161,7 +159,7 @@ class InboundReceipts {
                     .param("event", event).param("now", now).update();
         }
         return new Receipt(areaId == null ? "PENDING_AREA" : "RECEIVED", Long.toString(receipt), Long.toString(batch),
-                waybill, toInstant(now), Long.toString(employee.accountId()),
+                waybill, BeijingTime.fromDatabase(now), Long.toString(employee.accountId()),
                 areaId == null ? null : new ReceiptArea(areaId.toString(), name), match.pendingReason(), false);
     }
 
@@ -212,15 +210,11 @@ class InboundReceipts {
         }
     }
 
-    private static Instant toInstant(LocalDateTime timestamp) {
-        return timestamp.toInstant(ZoneOffset.UTC);
-    }
-
     private record ExpectedAddress(String phone, String street, String community, String address) {}
     private record StoredOperation(long id, byte[] hash, String result) {}
     record Operation(int status, Receipt result) {}
     record ReceiptArea(String id, String name) {}
-    record Receipt(String status, String receiptId, String batchId, String waybillNo, Instant receivedAt,
+    record Receipt(String status, String receiptId, String batchId, String waybillNo, OffsetDateTime receivedAt,
                    String receivedBy, ReceiptArea area, PendingReason pendingAreaReason, boolean voided) {
         Receipt asDuplicate() {
             return new Receipt("ALREADY_RECEIVED", receiptId, batchId, waybillNo, receivedAt,

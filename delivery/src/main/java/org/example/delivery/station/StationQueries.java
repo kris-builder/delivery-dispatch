@@ -2,11 +2,11 @@ package org.example.delivery.station;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
+
+import org.example.delivery.time.BeijingTime;
 
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -92,23 +92,19 @@ public class StationQueries {
         return queryPage("""
                 SELECT s.id AS shift_id, w.id AS worker_id, w.display_name, s.code, s.starts_at, s.ends_at,
                        m.duty_status, m.version
-                """, SHIFT_MEMBER_FILTER, Map.of("unitId", staff.unitId(), "at", utcTimestamp(at)),
+                """, SHIFT_MEMBER_FILTER, Map.of("unitId", staff.unitId(), "at", BeijingTime.forDatabase(at)),
                 page, pageSize, "shift_id, worker_id", (row, rowNumber) -> new ShiftMember(
                         row.getString("shift_id"), row.getString("worker_id"), row.getString("display_name"),
-                        row.getString("code"), row.getObject("starts_at", LocalDateTime.class).toInstant(ZoneOffset.UTC),
-                        row.getObject("ends_at", LocalDateTime.class).toInstant(ZoneOffset.UTC),
+                        row.getString("code"), BeijingTime.fromDatabase(row.getObject("starts_at", LocalDateTime.class)),
+                        BeijingTime.fromDatabase(row.getObject("ends_at", LocalDateTime.class)),
                         row.getString("duty_status"), row.getString("version")));
     }
 
     private Page<Worker> queryOnDutyWorkers(StaffContext staff, long shiftId, Instant at, int page, int pageSize) {
         StationAccess.requireNetworkStaff(jdbc, staff, true);
         return queryPage("SELECT w.id, w.display_name ", ON_DUTY_FILTER,
-                Map.of("unitId", staff.unitId(), "at", utcTimestamp(at), "shiftId", shiftId), page, pageSize,
+                Map.of("unitId", staff.unitId(), "at", BeijingTime.forDatabase(at), "shiftId", shiftId), page, pageSize,
                 (row, rowNumber) -> new Worker(row.getString("id"), row.getString("display_name")));
-    }
-
-    private static LocalDateTime utcTimestamp(Instant at) {
-        return LocalDateTime.ofInstant(Objects.requireNonNull(at, "at"), ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
     }
 
     private <T> Page<T> queryPage(String select, String filter, Map<String, ?> parameters,
@@ -138,5 +134,5 @@ public class StationQueries {
     public record Worker(String id, String displayName) {}
 
     public record ShiftMember(String shiftId, String workerId, String displayName, String code,
-                              Instant startsAt, Instant endsAt, String status, String version) {}
+                              OffsetDateTime startsAt, OffsetDateTime endsAt, String status, String version) {}
 }

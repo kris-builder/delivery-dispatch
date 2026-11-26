@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StationSchedulingHttpTests {
     private static final String SHIFTS = "/staff/shifts";
-    private static final String AT = "?at=2026-11-25T00:00:00Z";
+    private static final String AT = "?at=2026-11-25T08:00:00%2B08:00";
 
     @LocalServerPort int port;
     @Autowired JdbcClient jdbc;
@@ -48,6 +48,7 @@ class StationSchedulingHttpTests {
             var member = expect(200, first.get(SHIFTS + AT)).path("items").get(0);
             var otherPage = expect(200, second.get(SHIFTS + AT)).path("items").get(0);
             assertEquals("陈立", member.path("displayName").asText());
+            assertEquals("2026-11-25T08:00:00+08:00", member.path("startsAt").asText());
             assertEquals("0", member.path("version").asText());
             assertEquals(member, otherPage);
 
@@ -89,13 +90,14 @@ class StationSchedulingHttpTests {
 
     @Test
     void dispatcherSchedulesAnExistingCourierAndStoresTheSessionActor() throws Exception {
+        assertEquals("+08:00", jdbc.sql("SELECT @@session.time_zone").query(String.class).single());
         try (var dispatcher = new AuthHttpClient(port)) {
             var actor = expect(200, dispatcher.login("dispatcher-zhou", UPDATED)).path("employeeId").asText();
             var couriers = expect(200, dispatcher.get("/staff/shift-couriers"));
             assertEquals(2, couriers.path("total").asInt());
             String worker = couriers.path("items").get(0).path("id").asText();
-            var payload = Map.of("workerId", worker, "code", "AFTERNOON", "startsAt", "2026-11-25T04:00:00Z",
-                    "endsAt", "2026-11-25T08:00:00Z");
+            var payload = Map.of("workerId", worker, "code", "AFTERNOON", "startsAt", "2026-11-25T12:00:00+08:00",
+                    "endsAt", "2026-11-25T16:00:00+08:00");
             var shift = expect(200, dispatcher.post(SHIFTS, payload, dispatcher.csrf())).path("shiftId").asText();
             assertEquals("SHIFT_CONFLICT", expect(409, dispatcher.post(SHIFTS, payload, dispatcher.csrf()))
                     .path("code").asText());
@@ -103,6 +105,9 @@ class StationSchedulingHttpTests {
                     SELECT COUNT(*) FROM shift_member WHERE shift_id = :shift AND worker_id = :worker
                     AND duty_status = 'ON_DUTY' AND updated_by = :actor AND version = 0
                     """).param("shift", shift).param("worker", worker).param("actor", actor).query(Integer.class).single());
+            assertEquals("2026-11-25 12:00:00.000000", jdbc.sql("""
+                    SELECT DATE_FORMAT(starts_at, '%Y-%m-%d %H:%i:%s.%f') FROM duty_shift WHERE id = :shift
+                    """).param("shift", shift).query(String.class).single());
         }
     }
 

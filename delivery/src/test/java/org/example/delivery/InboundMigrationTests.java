@@ -7,7 +7,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.test.context.ActiveProfiles;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -22,7 +24,7 @@ class InboundMigrationTests {
     @Autowired JdbcClient jdbc;
 
     @Test
-    void upgradesExistingIdentityAndStationDataThenPreservesExpectedOnlyStateFromV6() {
+    void preservesExpectedAndReceivedParcelsWhenUpgradingLegacyTimestamps() {
         long operatorId = jdbc.sql("SELECT id FROM employee_account WHERE login_name = 'operator-xu'").query(Long.class).single();
         long areaId = jdbc.sql("""
                 SELECT d.area_id FROM area_duty d JOIN org_unit u ON u.id = (SELECT network_id FROM delivery_area WHERE id = d.area_id)
@@ -31,20 +33,23 @@ class InboundMigrationTests {
         Flyway.configure().dataSource(dataSource).target("6").load().migrate();
         jdbc.sql("""
                 INSERT INTO inbound_batch (network_id, source_system, source_batch_no, source_fingerprint, imported_by, imported_at)
-                SELECT unit_id, 'SYNTHETIC', 'V6-DEMO', UNHEX(SHA2('sample', 256)), id, UTC_TIMESTAMP(6)
+                SELECT unit_id, 'SYNTHETIC', 'V6-DEMO', UNHEX(SHA2('sample', 256)), id, '2026-11-25 16:30:00.123456'
                 FROM employee_account WHERE id = :actor
                 """).param("actor", operatorId).update();
         jdbc.sql("""
                 INSERT INTO parcel (network_id, waybill_no, street, community, created_at, updated_at)
-                SELECT network_id, '0000000021', '后湖大道', '百步亭花园', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)
+                SELECT network_id, '0000000021', '后湖大道', '百步亭花园',
+                    '2026-11-25 16:30:00.123456', '2026-11-25 16:30:00.123456'
                 FROM inbound_batch WHERE source_batch_no = 'V6-DEMO'
                 """).update();
         jdbc.sql("""
                 INSERT INTO inbound_expected (batch_id, parcel_id, street, community, imported_at)
-                SELECT b.id, p.id, p.street, p.community, UTC_TIMESTAMP(6)
+                SELECT b.id, p.id, p.street, p.community, '2026-11-25 16:30:00.123456'
                 FROM inbound_batch b JOIN parcel p ON p.network_id = b.network_id
                 WHERE b.source_batch_no = 'V6-DEMO' AND p.waybill_no = '0000000021'
                 """).update();
+        Flyway.configure().dataSource(dataSource).target("7").load().migrate();
+        new ResourceDatabasePopulator(new ClassPathResource("beijing-legacy-receipt.sql")).execute(dataSource);
         Flyway.configure().dataSource(dataSource).load().migrate();
         assertEquals(operatorId, jdbc.sql("SELECT imported_by FROM inbound_batch WHERE source_batch_no = 'V6-DEMO'")
                 .query(Long.class).single());
@@ -55,8 +60,30 @@ class InboundMigrationTests {
                 WHERE p.waybill_no = '0000000021' AND p.stage = 'EXPECTED' AND p.holder_unit_id IS NULL
                       AND p.address_area_id IS NULL AND e.community = '百步亭花园'
                 """).query(Integer.class).single());
-        for (String table : new String[] {"inbound_receipt", "parcel_event", "sort_credit"}) {
-            assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM " + table).query(Integer.class).single());
-        }
+        assertEquals(0, jdbc.sql("""
+                SELECT COUNT(*) FROM inbound_receipt r JOIN parcel p ON p.id = r.parcel_id
+                WHERE p.waybill_no = '0000000021'
+                """).query(Integer.class).single());
+        String beijing = "2026-11-26 00:30:00.123456";
+        assertEquals(beijing, jdbc.sql("""
+                SELECT DATE_FORMAT(imported_at, '%Y-%m-%d %H:%i:%s.%f')
+                FROM inbound_batch WHERE source_batch_no = 'V6-DEMO'
+                """).query(String.class).single());
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM inbound_receipt r
+                JOIN parcel_event e ON e.id = r.scan_event_id
+                JOIN sort_credit c ON c.receipt_id = r.id
+                JOIN operation_receipt o ON o.id = e.operation_receipt_id
+                WHERE r.id = 9001 AND r.received_at = :beijing AND r.voided_at IS NULL
+                  AND e.occurred_at = :beijing AND c.credited_at = :beijing AND o.committed_at = :beijing
+                """).param("beijing", beijing).query(Integer.class).single());
+        assertEquals("2026-11-26T00:30:00.123456+08:00", jdbc.sql("""
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(result, '$.result.receivedAt'))
+                FROM operation_receipt WHERE id = 9001
+                """).query(String.class).single());
+        Flyway.configure().dataSource(dataSource).load().migrate();
+        assertEquals(beijing, jdbc.sql("""
+                SELECT DATE_FORMAT(received_at, '%Y-%m-%d %H:%i:%s.%f') FROM inbound_receipt WHERE id = 9001
+                """).query(String.class).single());
     }
 }

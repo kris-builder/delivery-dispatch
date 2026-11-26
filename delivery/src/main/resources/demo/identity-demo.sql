@@ -33,7 +33,7 @@ JOIN (
 ON DUPLICATE KEY UPDATE worker_no = worker_profile.worker_no;
 
 INSERT INTO area_duty (area_id, worker_id, updated_at)
-SELECT area.id, worker.id, '2026-11-24 00:00:00' FROM delivery_area area
+SELECT area.id, worker.id, '2026-11-24 08:00:00' FROM delivery_area area
 JOIN org_unit network ON network.id = area.network_id
 JOIN worker_profile worker ON worker.unit_id = network.id AND worker.worker_no = CASE
     WHEN network.code = 'OTHER-DEMO' THEN 'courier-wang'
@@ -43,7 +43,7 @@ WHERE (network.code = 'JIANGAN-DEMO' AND area.code IN ('EAST', 'WEST'))
 ON DUPLICATE KEY UPDATE area_id = area_duty.area_id;
 
 INSERT INTO duty_shift (unit_id, service_date, code, starts_at, ends_at)
-SELECT id, '2026-11-25', 'MORNING', '2026-11-25 00:00:00', '2026-11-25 04:00:00'
+SELECT id, '2026-11-25', 'MORNING', '2026-11-25 08:00:00', '2026-11-25 12:00:00'
 FROM org_unit WHERE code IN ('JIANGAN-DEMO', 'OTHER-DEMO')
 ON DUPLICATE KEY UPDATE code = duty_shift.code;
 

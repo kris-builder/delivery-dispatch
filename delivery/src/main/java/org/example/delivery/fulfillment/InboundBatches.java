@@ -2,7 +2,6 @@ package org.example.delivery.fulfillment;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -11,6 +10,7 @@ import java.util.List;
 import java.util.Objects;
 
 import org.example.delivery.identity.EmployeePrincipal;
+import org.example.delivery.time.BeijingTime;
 import org.example.delivery.web.ApiProblems;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -37,7 +37,7 @@ class InboundBatches {
         requireTargetNetwork(employee.unitId(), target);
         List<SourceParcel> parcels = validateParcels(manifest.parcels());
         byte[] fingerprint = hash(json.writeValueAsBytes(parcels));
-        LocalDateTime now = LocalDateTime.now(Clock.systemUTC());
+        LocalDateTime now = BeijingTime.now();
         jdbc.sql("""
                 INSERT INTO inbound_batch (network_id, source_system, source_batch_no, source_fingerprint, imported_by, imported_at)
                 VALUES (:unit, 'SYNTHETIC', :source, :fingerprint, :employee, :now)

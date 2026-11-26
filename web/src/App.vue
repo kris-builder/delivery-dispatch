@@ -12,7 +12,6 @@ interface EmployeeSession {
   role: keyof typeof roleNames
   unitId: string
   unitName: string
-  timeZone: string
   networkId: string
   workerId: string | null
   mustChangePassword: boolean
@@ -137,7 +136,6 @@ async function logout() {
       v-if="employee && !employee.mustChangePassword && ['NETWORK_DISPATCHER', 'NETWORK_OPERATOR'].includes(employee.role)"
       :key="employee.employeeId"
       :dispatcher="employee.role === 'NETWORK_DISPATCHER'"
-      :time-zone="employee.timeZone"
       @session-expired="sessionExpired"
     />
     <AreaRulePanel
@@ -154,7 +152,6 @@ async function logout() {
     <WaybillLookupPanel
       v-if="employee && !employee.mustChangePassword && ['NETWORK_DISPATCHER', 'NETWORK_OPERATOR'].includes(employee.role)"
       :key="employee.employeeId"
-      :time-zone="employee.timeZone"
       @session-expired="sessionExpired"
     />
     <p v-if="error" class="error" role="alert">{{ error }}</p>

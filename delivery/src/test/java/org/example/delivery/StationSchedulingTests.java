@@ -32,6 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
         """, executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
 @Sql(scripts = "/station-query-seed.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
 @Sql(statements = """
+        UPDATE duty_shift SET starts_at = DATE_ADD(starts_at, INTERVAL 8 HOUR),
+            ends_at = DATE_ADD(ends_at, INTERVAL 8 HOUR);
         INSERT INTO employee_account (id, unit_id, login_name, password_hash, role_code)
         VALUES (501, 101, 'fixture-dispatcher', 'unused-service-fixture', 'NETWORK_DISPATCHER');
         """, executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
