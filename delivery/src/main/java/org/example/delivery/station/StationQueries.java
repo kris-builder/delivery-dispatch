@@ -34,6 +34,7 @@ public class StationQueries {
                   JOIN duty_shift s ON s.id = m.shift_id AND s.unit_id = w.unit_id
                   WHERE m.worker_id = w.id AND m.duty_status = 'ON_DUTY'
                     AND s.starts_at <= :at AND :at < s.ends_at
+                    AND (:shiftId = 0 OR s.id = :shiftId)
               )
             """;
 
@@ -44,7 +45,7 @@ public class StationQueries {
     }
 
     public Page<Area> areas(StaffContext staff, int page, int pageSize) {
-        requireNetworkStaff(staff, false);
+        StationAccess.requireNetworkStaff(jdbc, staff, false);
         return queryPage(
                 "SELECT a.id AS id, a.code, a.name, a.active, w.id AS worker_id, w.display_name ",
                 AREA_FILTER, Map.of("unitId", staff.unitId()), page, pageSize,
@@ -57,27 +58,23 @@ public class StationQueries {
     }
 
     public Page<Worker> onDutyWorkers(StaffContext staff, Instant at, int page, int pageSize) {
-        requireNetworkStaff(staff, true);
+        return queryOnDutyWorkers(staff, 0, at, page, pageSize);
+    }
+
+    public Page<Worker> onDutyWorkersForShift(StaffContext staff, long shiftId, Instant at, int page, int pageSize) {
+        if (shiftId <= 0) {
+            throw new IllegalArgumentException("A positive shift ID is required");
+        }
+        return queryOnDutyWorkers(staff, shiftId, at, page, pageSize);
+    }
+
+    private Page<Worker> queryOnDutyWorkers(StaffContext staff, long shiftId, Instant at, int page, int pageSize) {
+        StationAccess.requireNetworkStaff(jdbc, staff, true);
         LocalDateTime atUtc = LocalDateTime.ofInstant(Objects.requireNonNull(at, "at"), ZoneOffset.UTC)
                 .truncatedTo(ChronoUnit.MICROS);
         return queryPage("SELECT w.id, w.display_name ", ON_DUTY_FILTER,
-                Map.of("unitId", staff.unitId(), "at", atUtc), page, pageSize,
+                Map.of("unitId", staff.unitId(), "at", atUtc, "shiftId", shiftId), page, pageSize,
                 (row, rowNumber) -> new Worker(row.getString("id"), row.getString("display_name")));
-    }
-
-    private void requireNetworkStaff(StaffContext staff, boolean dispatcherOnly) {
-        if (staff == null || !("NETWORK_DISPATCHER".equals(staff.roleCode())
-                || (!dispatcherOnly && "NETWORK_OPERATOR".equals(staff.roleCode())))) {
-            throw new SecurityException("This station query requires an authorized network employee");
-        }
-        boolean activeNetwork = jdbc.sql("""
-                SELECT EXISTS (
-                    SELECT 1 FROM org_unit WHERE id = :unitId AND kind = 'NETWORK' AND active = TRUE
-                )
-                """).param("unitId", staff.unitId()).query(Boolean.class).single();
-        if (!activeNetwork) {
-            throw new SecurityException("This station query requires an active delivery network");
-        }
     }
 
     private <T> Page<T> queryPage(String select, String filter, Map<String, ?> parameters,
