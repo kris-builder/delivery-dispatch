@@ -6,7 +6,6 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
-import java.util.Objects;
 
 import org.example.delivery.station.StationQueries.StaffContext;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -23,7 +22,7 @@ public class StationScheduling {
         this.jdbc = jdbc;
     }
 
-    public long schedule(StaffContext staff, long workerId, String code, Instant startsAt, Instant endsAt) {
+    public long schedule(StaffContext staff, long actorId, long workerId, String code, Instant startsAt, Instant endsAt) {
         String timezone = StationAccess.requireNetworkStaff(jdbc, staff, true);
         LocalDateTime start = utcTimestamp(startsAt);
         LocalDateTime end = utcTimestamp(endsAt);
@@ -62,27 +61,36 @@ public class StationScheduling {
                 .orElseThrow(() -> new ScheduleConflictException("Shift code already has different hours for that day"));
 
         jdbc.sql("""
-                INSERT INTO shift_member (shift_id, worker_id, duty_status)
-                VALUES (:shiftId, :workerId, 'ON_DUTY')
-                """).param("shiftId", shiftId).param("workerId", workerId).update();
+                INSERT INTO shift_member (shift_id, worker_id, duty_status, updated_by)
+                VALUES (:shiftId, :workerId, 'ON_DUTY', :actorId)
+                """).param("shiftId", shiftId).param("workerId", workerId).param("actorId", actorId).update();
         return shiftId;
     }
 
-    public void setDutyStatus(StaffContext staff, long workerId, long shiftId, DutyStatus status) {
+    public long setDutyStatus(StaffContext staff, long actorId, long workerId, long shiftId,
+                              DutyStatus status, long expectedVersion) {
         StationAccess.requireNetworkStaff(jdbc, staff, true);
-        Objects.requireNonNull(status, "status");
+        if (status == null || expectedVersion < 0) {
+            throw new IllegalArgumentException("Duty status and a nonnegative version are required");
+        }
         lockCourier(staff, workerId);
-        jdbc.sql("""
-                SELECT m.shift_id FROM shift_member m
+        long currentVersion = jdbc.sql("""
+                SELECT m.version FROM shift_member m
                 JOIN duty_shift s ON s.id = m.shift_id
                 WHERE m.shift_id = :shiftId AND m.worker_id = :workerId AND s.unit_id = :unitId
                 FOR UPDATE
                 """).param("shiftId", shiftId).param("workerId", workerId).param("unitId", staff.unitId())
                 .query(Long.class).optional()
                 .orElseThrow(() -> new IllegalArgumentException("Courier is not a member of this network shift"));
+        if (currentVersion != expectedVersion) {
+            throw new ShiftVersionConflictException();
+        }
         jdbc.sql("""
-                UPDATE shift_member SET duty_status = :status WHERE shift_id = :shiftId AND worker_id = :workerId
-                """).param("status", status.name()).param("shiftId", shiftId).param("workerId", workerId).update();
+                UPDATE shift_member SET duty_status = :status, updated_by = :actorId, version = version + 1
+                WHERE shift_id = :shiftId AND worker_id = :workerId
+                """).param("status", status.name()).param("actorId", actorId)
+                .param("shiftId", shiftId).param("workerId", workerId).update();
+        return currentVersion + 1;
     }
 
     private void lockCourier(StaffContext staff, long workerId) {
@@ -97,10 +105,15 @@ public class StationScheduling {
     }
 
     private static LocalDateTime utcTimestamp(Instant time) {
-        return LocalDateTime.ofInstant(Objects.requireNonNull(time), ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
+        if (time == null) {
+            throw new IllegalArgumentException("Shift start and end are required");
+        }
+        return LocalDateTime.ofInstant(time, ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
     }
 
     public enum DutyStatus { ON_DUTY, ON_LEAVE }
+
+    public static class ShiftVersionConflictException extends IllegalStateException {}
 
     public static class ScheduleConflictException extends IllegalStateException {
         public ScheduleConflictException(String message) {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ApiError, requestJson } from './api'
+import StationSchedulingPanel from './StationSchedulingPanel.vue'
 import example from '../../fixtures/station-01-query.json'
 
 interface Page<T> { items: T[]; page: number; pageSize: number; total: number }
@@ -116,6 +117,13 @@ onBeforeUnmount(() => lifetime.abort())
         </div>
       </section>
     </div>
+    <StationSchedulingPanel
+      v-if="dispatcher && currentAt"
+      :at="currentAt"
+      :time-zone="timeZone"
+      @updated="loadWorkers(1, currentAt)"
+      @session-expired="emit('sessionExpired')"
+    />
   </section>
 </template>
 

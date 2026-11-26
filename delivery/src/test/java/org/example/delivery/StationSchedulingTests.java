@@ -31,7 +31,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
         VALUES (101, 'NETWORK', 'JIANGAN-DEMO', '江岸网点', 'Asia/Shanghai');
         """, executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
 @Sql(scripts = "/station-query-seed.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
+@Sql(statements = """
+        INSERT INTO employee_account (id, unit_id, login_name, password_hash, role_code)
+        VALUES (501, 101, 'fixture-dispatcher', 'unused-service-fixture', 'NETWORK_DISPATCHER');
+        """, executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
 class StationSchedulingTests {
+    private static final long ACTOR = 501;
     private static final StaffContext DISPATCHER = new StaffContext(101, "NETWORK_DISPATCHER");
     private static final StaffContext OPERATOR = new StaffContext(101, "NETWORK_OPERATOR");
     private static final long CHEN = 301;
@@ -48,18 +53,17 @@ class StationSchedulingTests {
     void recordsWholeShiftLeaveAndKeepsTheRegularAreaOwner() {
         Instant start = Instant.parse("2026-11-26T00:00:00Z");
         Instant end = start.plus(4, ChronoUnit.HOURS);
-        long shift = scheduling.schedule(DISPATCHER, CHEN, "MORNING", start, end);
-        assertEquals(shift, scheduling.schedule(DISPATCHER, LIU, "MORNING", start, end));
+        long shift = scheduling.schedule(DISPATCHER, ACTOR, CHEN, "MORNING", start, end);
+        assertEquals(shift, scheduling.schedule(DISPATCHER, ACTOR, LIU, "MORNING", start, end));
         assertEquals(List.of("陈立", "刘洋"), onDuty(start));
 
-        scheduling.setDutyStatus(DISPATCHER, CHEN, shift, ON_LEAVE);
-        scheduling.setDutyStatus(DISPATCHER, CHEN, shift, ON_LEAVE);
+        scheduling.setDutyStatus(DISPATCHER, ACTOR, CHEN, shift, ON_LEAVE, 0);
         assertEquals("ON_LEAVE", status(CHEN, shift));
         assertEquals("陈立", queries.areas(OPERATOR, 1, 20).items().getFirst().regularWorker().displayName());
         assertEquals(List.of("刘洋"), onDuty(start));
         assertEquals(List.of("刘洋"), onDuty(end.minusSeconds(1)));
 
-        scheduling.setDutyStatus(DISPATCHER, CHEN, shift, ON_DUTY);
+        scheduling.setDutyStatus(DISPATCHER, ACTOR, CHEN, shift, ON_DUTY, 1);
         assertEquals(List.of("陈立", "刘洋"), onDuty(start));
     }
 
@@ -67,15 +71,15 @@ class StationSchedulingTests {
     void rejectsForeignCouriersWrongRoleAndInvalidIntervalsWithoutChanges() {
         Instant start = Instant.parse("2026-11-27T00:00:00Z");
         Instant end = start.plusSeconds(3600);
-        assertThrows(SecurityException.class, () -> scheduling.schedule(OPERATOR, CHEN, "WRONG", start, end));
-        assertThrows(SecurityException.class, () -> scheduling.schedule(DISPATCHER, 303, "WRONG", start, end));
-        assertThrows(SecurityException.class, () -> scheduling.schedule(DISPATCHER, 304, "WRONG", start, end));
-        assertThrows(IllegalArgumentException.class, () -> scheduling.schedule(DISPATCHER, CHEN, "WRONG", start, start));
-        assertThrows(IllegalArgumentException.class, () -> scheduling.schedule(DISPATCHER, CHEN, "WRONG", end, start));
-        assertThrows(SecurityException.class, () -> scheduling.setDutyStatus(OPERATOR, CHEN, 401, ON_LEAVE));
-        assertThrows(SecurityException.class, () -> scheduling.setDutyStatus(DISPATCHER, 303, 402, ON_LEAVE));
+        assertThrows(SecurityException.class, () -> scheduling.schedule(OPERATOR, ACTOR, CHEN, "WRONG", start, end));
+        assertThrows(SecurityException.class, () -> scheduling.schedule(DISPATCHER, ACTOR, 303, "WRONG", start, end));
+        assertThrows(SecurityException.class, () -> scheduling.schedule(DISPATCHER, ACTOR, 304, "WRONG", start, end));
+        assertThrows(IllegalArgumentException.class, () -> scheduling.schedule(DISPATCHER, ACTOR, CHEN, "WRONG", start, start));
+        assertThrows(IllegalArgumentException.class, () -> scheduling.schedule(DISPATCHER, ACTOR, CHEN, "WRONG", end, start));
+        assertThrows(SecurityException.class, () -> scheduling.setDutyStatus(OPERATOR, ACTOR, CHEN, 401, ON_LEAVE, 0));
+        assertThrows(SecurityException.class, () -> scheduling.setDutyStatus(DISPATCHER, ACTOR, 303, 402, ON_LEAVE, 0));
         assertThrows(IllegalArgumentException.class,
-                () -> scheduling.setDutyStatus(DISPATCHER, CHEN, 402, ON_LEAVE));
+                () -> scheduling.setDutyStatus(DISPATCHER, ACTOR, CHEN, 402, ON_LEAVE, 0));
         assertEquals(0, shiftCount("2026-11-27"));
         assertEquals("ON_DUTY", status(CHEN, 401));
         assertEquals("ON_DUTY", status(303, 402));
@@ -85,11 +89,11 @@ class StationSchedulingTests {
     void rejectsOverlapEvenForLeaveAndAllowsAdjacentShifts() {
         Instant start = Instant.parse("2026-11-28T00:00:00Z");
         Instant end = start.plus(4, ChronoUnit.HOURS);
-        long first = scheduling.schedule(DISPATCHER, CHEN, "FIRST", start, end);
-        scheduling.setDutyStatus(DISPATCHER, CHEN, first, ON_LEAVE);
-        assertThrows(ScheduleConflictException.class, () -> scheduling.schedule(DISPATCHER, CHEN, "OVERLAP",
+        long first = scheduling.schedule(DISPATCHER, ACTOR, CHEN, "FIRST", start, end);
+        scheduling.setDutyStatus(DISPATCHER, ACTOR, CHEN, first, ON_LEAVE, 0);
+        assertThrows(ScheduleConflictException.class, () -> scheduling.schedule(DISPATCHER, ACTOR, CHEN, "OVERLAP",
                 start.plus(2, ChronoUnit.HOURS), end.plus(2, ChronoUnit.HOURS)));
-        long second = scheduling.schedule(DISPATCHER, CHEN, "SECOND", end, end.plus(4, ChronoUnit.HOURS));
+        long second = scheduling.schedule(DISPATCHER, ACTOR, CHEN, "SECOND", end, end.plus(4, ChronoUnit.HOURS));
         assertEquals(2, shiftCount("2026-11-28"));
         assertEquals("ON_DUTY", status(CHEN, second));
         assertEquals(List.of(), onDuty(end.minusSeconds(1)));
@@ -120,7 +124,7 @@ class StationSchedulingTests {
     private long submit(CyclicBarrier startTogether, String code, Instant start) throws Exception {
         startTogether.await(5, TimeUnit.SECONDS);
         try {
-            return scheduling.schedule(DISPATCHER, CHEN, code, start, start.plus(4, ChronoUnit.HOURS));
+            return scheduling.schedule(DISPATCHER, ACTOR, CHEN, code, start, start.plus(4, ChronoUnit.HOURS));
         } catch (ScheduleConflictException conflict) {
             return 0;
         }

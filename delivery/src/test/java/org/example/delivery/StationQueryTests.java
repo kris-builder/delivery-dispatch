@@ -55,7 +55,26 @@ class StationQueryTests {
 
         Flyway.configure().dataSource(dataSource).target("2").load().migrate();
         new ResourceDatabasePopulator(new ClassPathResource("station-query-seed.sql")).execute(dataSource);
+        Flyway.configure().dataSource(dataSource).target("3").load().migrate();
+        jdbc.sql("""
+                INSERT INTO employee_account (id, unit_id, login_name, password_hash, role_code)
+                VALUES (501, 102, 'legacy-dispatcher', 'unused-migration-fixture', 'NETWORK_DISPATCHER')
+                """).update();
+        jdbc.sql("UPDATE shift_member SET duty_status = 'ON_LEAVE' WHERE shift_id = 402 AND worker_id = 303").update();
         Flyway.configure().dataSource(dataSource).load().migrate();
+    }
+
+    @Test
+    void upgradesExistingShiftMembersWithoutInventingAnOperator() {
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM flyway_schema_history WHERE version = '4' AND success = 1
+                """).query(Integer.class).single(), "Expected V4 to migrate the existing shift members");
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM shift_member WHERE shift_id = 402 AND worker_id = 303
+                AND duty_status = 'ON_LEAVE' AND version = 0 AND updated_by IS NULL
+                """).query(Integer.class).single());
+        assertEquals("legacy-dispatcher", jdbc.sql("SELECT login_name FROM employee_account WHERE id = 501")
+                .query(String.class).single());
     }
 
     @Test
