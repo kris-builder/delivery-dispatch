@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { ApiError, postJson, requestJson } from './api'
+import { pendingAreaReasons, type PendingAreaReason } from './inboundAreaReasons'
 import demo from '../../fixtures/mvp.json'
 
 interface BatchSummary {
@@ -21,7 +22,7 @@ interface Receipt {
   waybillNo: string
   receivedBy: string
   area: { id: string; name: string } | null
-  pendingAreaReason: keyof typeof pendingReasons | null
+  pendingAreaReason: PendingAreaReason | null
 }
 
 interface Scan {
@@ -45,11 +46,6 @@ const sending = ref(false)
 const blocked = ref('')
 const history = ref<{ key: string; waybill: string; message: string; failed: boolean }[]>([])
 const batchLocked = computed(() => scanning.value || sending.value || queue.value.length > 0)
-const pendingReasons = {
-  MISSING_ADDRESS: '地址缺街道或小区',
-  NO_EFFECTIVE_RULE: '没有匹配的有效规则',
-  MATCH_UNCONFIRMED: '片区匹配结果无法确认',
-}
 
 function showError(reason: unknown) {
   if (reason instanceof ApiError && reason.status === 401) {
@@ -131,7 +127,7 @@ function resultMessage(receipt: Receipt) {
     return area ? `重复扫码 · ${area}` : '重复扫码 · 待补分'
   }
   if (area) return area
-  return receipt.pendingAreaReason ? `已实收待补分 · ${pendingReasons[receipt.pendingAreaReason]}` : '已实收待补分'
+  return receipt.pendingAreaReason ? `已实收待补分 · ${pendingAreaReasons[receipt.pendingAreaReason]}` : '已实收待补分'
 }
 
 function addResult(scan: Scan, message: string, failed = false) {

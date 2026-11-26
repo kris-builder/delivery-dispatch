@@ -60,6 +60,70 @@ class InboundReceiptTests {
     }
 
     @Test
+    void looksUpAssignedPendingExpectedAndForeignWaybillsThroughEmployeeHttp() throws Exception {
+        String batch = importBatch("LOOKUP-STATES", List.of(line("00060001", "东"), line("00060002", "未知"),
+                line("00060003", "西")));
+        try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou");
+             var foreign = login(port, "operator-foreign-test"); var sorter = login(port, "sorter-test")) {
+            var csrf = operator.csrf();
+            var receipt = expect(201, operator.post(scan(batch), body("00060001"), csrf, "lookup-a"));
+            expect(201, operator.post(scan(batch), body("00060002"), csrf, "lookup-b"));
+            var assigned = expect(200, dispatcher.get(lookup("00060001")));
+            assertEquals("00060001", assigned.path("waybillNo").asText());
+            assertEquals(receipt.path("receivedAt"), assigned.path("firstReceivedAt"));
+            assertEquals(batch, assigned.path("receivedBatch").path("id").asText());
+            assertEquals("LOOKUP-STATES", assigned.path("receivedBatch").path("sourceBatchNo").asText());
+            assertEquals("东片区", assigned.path("area").path("name").asText());
+            assertEquals("INBOUND_RECEIVED", assigned.path("events").get(0).path("type").asText());
+            var pending = expect(200, operator.get(lookup("00060002")));
+            assertEquals("PENDING_AREA", pending.path("status").asText());
+            assertEquals("NO_EFFECTIVE_RULE", pending.path("pendingAreaReason").asText());
+            var expected = expect(200, operator.get(lookup("00060003")));
+            assertEquals("EXPECTED", expected.path("status").asText());
+            assertTrue(expected.path("firstReceivedAt").isNull());
+            assertTrue(expected.path("receivedBatch").isNull());
+            assertEquals(batch, expected.path("expectedBatches").get(0).path("id").asText());
+            assertEquals(0, expected.path("events").size());
+            assertEquals(expect(404, foreign.get(lookup("00069999"))).path("code"),
+                    expect(404, foreign.get(lookup("00060001"))).path("code"));
+            expect(404, operator.get(lookup("60001")));
+            expect(403, sorter.get(lookup("00060001")));
+            assertEquals(2, countForBatch("inbound_receipt", batch));
+        }
+    }
+
+    @Test
+    void lookupPreservesFirstReceiptAcrossDuplicateScansAndReadsTheCurrentArea() throws Exception {
+        String first = importBatch("LOOKUP-FIRST", List.of(line("00061001", "东")));
+        String other = importBatch("LOOKUP-OTHER", List.of(line("00061001", "西")));
+        try (var operator = login(port, "operator-xu")) {
+            var csrf = operator.csrf();
+            var original = expect(201, operator.post(scan(first), body("00061001"), csrf, "lookup-original"));
+            expect(200, operator.post(scan(other), body("00061001"), csrf, "lookup-duplicate"));
+            var before = expect(200, operator.get(lookup("00061001")));
+            assertEquals(original.path("receivedAt"), before.path("firstReceivedAt"));
+            assertEquals(first, before.path("receivedBatch").path("id").asText());
+            assertEquals(1, before.path("events").size());
+            // A persisted area change models the future correction entry point.
+            jdbc.sql("""
+                    UPDATE parcel p JOIN delivery_area a ON a.network_id = p.network_id AND a.code = 'WEST'
+                    SET p.address_area_id = a.id, p.address_area_name = a.name
+                    WHERE p.waybill_no = '00061001'
+                    """).update();
+            var after = expect(200, operator.get(lookup("00061001")));
+            assertEquals("西片区", after.path("area").path("name").asText());
+            assertEquals(before.path("firstReceivedAt"), after.path("firstReceivedAt"));
+            assertEquals(before.path("receivedBatch"), after.path("receivedBatch"));
+            assertEquals(1, countForBatch("inbound_receipt", first));
+            assertEquals(0, countForBatch("inbound_receipt", other));
+        }
+    }
+
+    private static String lookup(String waybill) {
+        return "/staff/parcels?waybillNo=" + waybill;
+    }
+
+    @Test
     void fourSubmissionsPersistThreeReceiptsAndTwoCreditsWithOriginalWaybillsAndActor() throws Exception {
         String id = importBatch("SCAN-FOUR", List.of(line("00010001", "东"), line("00010002", "未知"),
                 line("00010003", "西"), Map.of("waybillNo", "00010004")));

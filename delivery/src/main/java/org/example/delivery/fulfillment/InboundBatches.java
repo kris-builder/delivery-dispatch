@@ -118,7 +118,10 @@ class InboundBatches {
         if (input == null || !input.isTextual()) {
             throw invalid(label + "须为非空字符串。");
         }
-        String value = input.asText();
+        return requiredText(input.asText(), maxLength, label);
+    }
+
+    static String requiredText(String value, int maxLength, String label) {
         if (value.isBlank() || value.length() > maxLength || !value.equals(value.strip())
                 || value.codePoints().anyMatch(Character::isISOControl)) {
             throw invalid(label + "长度或格式无效。");

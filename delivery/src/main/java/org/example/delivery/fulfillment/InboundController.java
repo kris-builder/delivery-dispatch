@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 
@@ -20,10 +21,12 @@ import tools.jackson.databind.JsonNode;
 class InboundController {
     private final InboundBatches batches;
     private final InboundReceipts receipts;
+    private final WaybillLookup waybills;
 
-    InboundController(InboundBatches batches, InboundReceipts receipts) {
+    InboundController(InboundBatches batches, InboundReceipts receipts, WaybillLookup waybills) {
         this.batches = batches;
         this.receipts = receipts;
+        this.waybills = waybills;
     }
 
     @PostMapping("/staff/inbound-batches")
@@ -65,6 +68,12 @@ class InboundController {
     @GetMapping("/operations/INBOUND_RECEIPT/{key}")
     InboundReceipts.Operation operation(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable String key) {
         return receipts.operation(employee, key);
+    }
+
+    @GetMapping("/staff/parcels")
+    WaybillLookup.Result lookup(@AuthenticationPrincipal EmployeePrincipal employee,
+                                @RequestParam String waybillNo) {
+        return waybills.find(employee, InboundBatches.requiredText(waybillNo, 64, "运单号"));
     }
 
     record ScanInput(JsonNode waybillNo) {}
