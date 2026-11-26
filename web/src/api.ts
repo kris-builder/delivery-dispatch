@@ -18,6 +18,8 @@ export async function requestJson<T>(path: string, options: RequestInit = {}): P
     credentials: 'same-origin',
     headers,
   })
+  if (response.status === 204) return undefined as T
+
   const isJson = (response.headers.get('Content-Type') ?? '').includes('json')
   const body = isJson ? await response.json() : undefined
 
@@ -28,4 +30,15 @@ export async function requestJson<T>(path: string, options: RequestInit = {}): P
   }
 
   return body as T
+}
+
+export async function postJson<T>(path: string, data?: Record<string, string>): Promise<T> {
+  const csrf = await requestJson<{ headerName: string; token: string }>('/auth/csrf')
+  const headers = new Headers({ [csrf.headerName]: csrf.token })
+  if (data) headers.set('Content-Type', 'application/json')
+  return requestJson<T>(path, {
+    method: 'POST',
+    headers,
+    body: data ? JSON.stringify(data) : undefined,
+  })
 }

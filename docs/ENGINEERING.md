@@ -82,6 +82,10 @@
 - 使用 Spring Security 服务端会话。会话识别为员工或收件人之一；登录或改密轮换会话 ID，注销即作废。Cookie 使用 `HttpOnly`、`SameSite=Lax`，HTTPS 部署启用 `Secure`。身份切换重新登录。并发角色测试使用独立浏览器会话。 [Spring Security 会话管理](https://docs.spring.io/spring-security/reference/servlet/authentication/session-management.html)
 - 同源浏览器先读取 CSRF 令牌，修改请求带服务端返回的头名和值。登录、注销和改密后重新获取令牌。API 认证失败返回 JSON 错误，由前端决定是否回到自己的登录页。 [Spring Security CSRF](https://docs.spring.io/spring-security/reference/servlet/exploits/csrf.html)
 
+员工登录提交 `loginName`、`password`，首登改密提交 `temporaryPassword`、`newPassword`。登录、改密及员工会话查询使用相同响应，包含 `type=EMPLOYEE`、`employeeId`、`role`、`unitId`、`unitName`、`timeZone`、`networkId`、可空的 `workerId` 和 `mustChangePassword`。员工空闲超时配置 `delivery.employee.session-timeout`，默认 `30m`。同源 HTTPS 部署可通过 `server.servlet.session.cookie.secure=true` 显式启用安全 Cookie。
+
+第一批员工查询开放 `GET /staff/areas` 和 `GET /staff/workers`。后者要求 ISO 8601 时点 `at`，两者均接受 `page`、`pageSize`。单位和岗位取自员工会话；操作员可查片区，在岗配送员查询仅向网点调度开放。
+
 ### 岗位与资源授权
 
 先判断登录身份类型和岗位，再核对资源归属，写入前在业务事务里重查授权和实际状态。隐藏前端按钮只负责交互显示。用户填写的角色、网点、人员 ID 或运单号均由服务端校验。

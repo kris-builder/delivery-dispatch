@@ -1,52 +1,118 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { ApiError, requestJson } from './api'
 import example from '../../fixtures/station-01-query.json'
 
-const scenario = ref<keyof typeof example.workers>('onDuty')
-const workers = computed(() => example.workers[scenario.value])
-const queryTime = new Intl.DateTimeFormat('zh-CN', {
-  timeZone: example.timeZone,
-  dateStyle: 'medium',
-  timeStyle: 'short',
-  hourCycle: 'h23',
-}).format(new Date(example.at))
+interface Page<T> { items: T[]; page: number; pageSize: number; total: number }
+interface Worker { id: string; displayName: string }
+interface Area { id: string; code: string; name: string; regularWorker: Worker | null }
+
+const props = defineProps<{ dispatcher: boolean; timeZone: string }>()
+const emit = defineEmits<{ sessionExpired: [] }>()
+const lifetime = new AbortController()
+const areas = ref<Page<Area> | null>(null)
+const workers = ref<Page<Worker> | null>(null)
+const areaLoading = ref(false)
+const workerLoading = ref(false)
+const areaError = ref('')
+const workerError = ref('')
+const utcInput = ref(example.at.slice(0, 16))
+const currentAt = ref('')
+const formatTime = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: props.timeZone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23',
+})
+
+function reportError(reason: unknown) {
+  if (lifetime.signal.aborted) return ''
+  if (reason instanceof ApiError && reason.status === 401) emit('sessionExpired')
+  return reason instanceof ApiError ? reason.message : '查询失败，请重试。'
+}
+
+async function loadAreas(page: number) {
+  areaLoading.value = true
+  areaError.value = ''
+  try {
+    areas.value = await requestJson<Page<Area>>(`/staff/areas?page=${page}`, { signal: lifetime.signal })
+  } catch (reason) {
+    areaError.value = reportError(reason)
+  } finally {
+    areaLoading.value = false
+  }
+}
+
+async function loadWorkers(page: number, at: string) {
+  workerLoading.value = true
+  workerError.value = ''
+  try {
+    const query = new URLSearchParams({ at, page: String(page) })
+    workers.value = await requestJson<Page<Worker>>(`/staff/workers?${query}`, { signal: lifetime.signal })
+    currentAt.value = at
+  } catch (reason) {
+    workerError.value = reportError(reason)
+  } finally {
+    workerLoading.value = false
+  }
+}
+
+function queryWorkers() {
+  const selected = new Date(`${utcInput.value}Z`)
+  if (!Number.isFinite(selected.getTime())) {
+    workerError.value = '请选择有效的查询时间。'
+    return
+  }
+  void loadWorkers(1, selected.toISOString())
+}
+
+onMounted(() => {
+  void loadAreas(1)
+  if (props.dispatcher) queryWorkers()
+})
+onBeforeUnmount(() => lifetime.abort())
 </script>
 
 <template>
   <section class="panel station" aria-labelledby="station-title">
-    <div>
-      <h2 id="station-title">片区与当班人员</h2>
-      <p class="query-context">
-        {{ example.organizationName }} · <time :datetime="example.at">{{ queryTime }}</time>（北京时间）
-      </p>
-    </div>
-
-    <fieldset>
-      <legend>演示情景</legend>
-      <label><input v-model="scenario" type="radio" name="station-scenario" value="onDuty"> 正常在岗</label>
-      <label><input v-model="scenario" type="radio" name="station-scenario" value="onLeave"> 东片区负责人请假</label>
-    </fieldset>
-
-    <div class="station-results">
-      <table>
-        <caption>启用片区</caption>
-        <thead>
-          <tr><th scope="col">片区</th><th scope="col">常规负责人</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="area in example.areas.items" :key="area.id">
-            <th scope="row">{{ area.name }} <span class="area-code">{{ area.code }}</span></th>
-            <td>{{ area.regularWorker?.displayName ?? '未配置' }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <section class="roster" aria-labelledby="roster-title">
-        <h3 id="roster-title">当班配送员</h3>
-        <div aria-live="polite">
-          <p>{{ workers.total }} 人在岗</p>
-          <ul>
+    <h2 id="station-title">{{ dispatcher ? '片区与当班人员' : '本网点片区' }}</h2>
+    <div class="station-results" :class="{ dispatcher }">
+      <section aria-label="启用片区">
+        <table v-if="areas?.items.length">
+          <caption>启用片区</caption>
+          <thead>
+            <tr><th scope="col">片区</th><th scope="col">常规负责人</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="area in areas.items" :key="area.id">
+              <th scope="row">{{ area.name }}</th>
+              <td>{{ area.regularWorker?.displayName ?? '未配置' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="areaLoading" role="status">正在查询片区</p>
+        <p v-else-if="areas && !areas.total">当前没有启用片区。</p>
+        <p v-if="areaError" role="alert" class="error">{{ areaError }}</p>
+        <button v-if="areaError && !areas" type="button" :disabled="areaLoading" @click="loadAreas(1)">重查片区</button>
+        <div v-if="areas && areas.total > areas.pageSize" class="pager">
+          <button type="button" :disabled="areaLoading || areas.page <= 1" @click="loadAreas(areas.page - 1)">上一页</button>
+          <button type="button" :disabled="areaLoading || areas.page * areas.pageSize >= areas.total" @click="loadAreas(areas.page + 1)">下一页</button>
+        </div>
+      </section>
+      <section v-if="dispatcher" class="roster" aria-labelledby="roster-title">
+        <h3 id="roster-title">在岗配送员</h3>
+        <form class="query" @submit.prevent="queryWorkers">
+          <label>查询时间（UTC） <input v-model="utcInput" required type="datetime-local"></label>
+          <button :disabled="workerLoading">查当班</button>
+        </form>
+        <p v-if="workerLoading" role="status">正在查询当班人员</p>
+        <p v-if="workerError" role="alert" class="error">{{ workerError }}</p>
+        <div v-if="workers" aria-live="polite">
+          <p><time :datetime="currentAt">{{ formatTime.format(new Date(currentAt)) }}（网点时间）</time> · {{ workers.total }} 人在岗</p>
+          <ul v-if="workers.items.length">
             <li v-for="worker in workers.items" :key="worker.id">{{ worker.displayName }}</li>
           </ul>
+          <div v-if="workers.total > workers.pageSize" class="pager">
+            <button type="button" :disabled="workerLoading || workers.page <= 1" @click="loadWorkers(workers.page - 1, currentAt)">上一页</button>
+            <button type="button" :disabled="workerLoading || workers.page * workers.pageSize >= workers.total" @click="loadWorkers(workers.page + 1, currentAt)">下一页</button>
+          </div>
         </div>
       </section>
     </div>
@@ -54,32 +120,19 @@ const queryTime = new Intl.DateTimeFormat('zh-CN', {
 </template>
 
 <style scoped>
-.station { display: grid; gap: 16px; }
-.query-context { color: #51645b; margin-top: 4px; }
-
-fieldset {
-  min-width: 0;
-  margin: 0;
-  padding: 4px 12px 8px;
-  border: 1px solid #d7e3dd;
-  border-radius: 7px;
-}
-
-legend { padding: 0 4px; color: #51645b; }
-label { display: inline-flex; align-items: center; min-height: 38px; gap: 5px; margin-right: 14px; }
-input { accent-color: #0c6650; }
-
-.station-results { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; align-items: start; }
+.station, .roster { display: grid; gap: 12px; }
+.station-results { display: grid; gap: 20px; align-items: start; }
+.station-results.dispatcher { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 table { width: 100%; border-collapse: collapse; }
 caption, h3 { margin: 0 0 5px; text-align: left; font-size: 15px; font-weight: 700; }
 th, td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid #d7e3dd; }
 thead th { color: #51645b; font-weight: 500; }
 tbody th { font-weight: 500; }
-.area-code { color: #51645b; font-size: 12px; }
-.roster p { color: #0c6650; }
+.query { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+.query label { display: grid; gap: 4px; min-width: 0; }
 .roster ul { margin: 5px 0 0; padding-left: 22px; }
-
-@media (max-width: 520px) {
-  .station-results { grid-template-columns: 1fr; gap: 14px; }
+.pager { display: flex; gap: 6px; margin-top: 8px; }
+@media (max-width: 560px) {
+  .station-results.dispatcher { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

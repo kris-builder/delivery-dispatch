@@ -28,12 +28,13 @@ class DeliveryApplicationTests {
 
     @Test
     void migratesEmptyDatabaseAndServesHealth() throws Exception {
-        int versions = jdbc.sql("SELECT COUNT(*) FROM flyway_schema_history WHERE version IN ('1', '2') AND success = 1")
+        int versions = jdbc.sql("SELECT COUNT(*) FROM flyway_schema_history WHERE version IN ('1', '2', '3') AND success = 1")
                 .query(Integer.class).single();
-        assertEquals(2, versions);
+        assertEquals(3, versions);
 
         int units = jdbc.sql("SELECT COUNT(*) FROM org_unit").query(Integer.class).single();
         assertEquals(0, units);
+        assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM employee_account").query(Integer.class).single());
 
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/v1/system/health"))
                 .timeout(Duration.ofSeconds(5))
