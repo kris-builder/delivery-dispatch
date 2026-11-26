@@ -28,9 +28,9 @@ class DeliveryApplicationTests {
 
     @Test
     void migratesEmptyDatabaseAndServesHealth() throws Exception {
-        int version = jdbc.sql("SELECT COUNT(*) FROM flyway_schema_history WHERE version = '1' AND success = 1")
+        int versions = jdbc.sql("SELECT COUNT(*) FROM flyway_schema_history WHERE version IN ('1', '2') AND success = 1")
                 .query(Integer.class).single();
-        assertEquals(1, version);
+        assertEquals(2, versions);
 
         int units = jdbc.sql("SELECT COUNT(*) FROM org_unit").query(Integer.class).single();
         assertEquals(0, units);
