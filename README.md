@@ -34,7 +34,21 @@ npm ci
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5173` 检查 Vite 代理。页面展示的其余样例来自同一份 JSON，账号、片区、班次和运单随相关 Spec 分批落库。种子脚本只装载一个样例网点，可重复执行。后端冒烟在 `delivery/` 执行 `./mvnw.cmd test`，前端构建在 `web/` 执行 `npm run build`。
+打开 `http://127.0.0.1:5173` 进入员工登录。种子脚本只装载一个样例网点，可重复执行。后端冒烟在 `delivery/` 执行 `./mvnw.cmd test`，前端构建在 `web/` 执行 `npm run build`。
+
+### 实测员工查询权限
+
+使用独立演示库。在工作树根目录的 `.env` 为 MySQL 与 Java 选用空闲端口，为 `MYSQL_DATABASE` 配置独立库名，并设置 `DELIVERY_DEMO_TEMPORARY_PASSWORD` 为自己选定的演示临时密码。用独立 Compose 项目启动 MySQL。Java 同时启用 `local` 和 `identity-demo`，首次启动会装载两个网点、两个驿站、上午班和合成员工账号。再次启动会保留已修改的密码和已存在的样例记录。
+
+```powershell
+docker compose -p delivery-identity-demo up -d --wait mysql
+Set-Location delivery
+.\mvnw.cmd '-Dspring-boot.run.profiles=local,identity-demo' spring-boot:run
+```
+
+另开终端，在 `web/` 运行 `npm ci` 和 `npm run dev -- --port 5176`。打开 `http://127.0.0.1:5176`，用 `dispatcher-zhou` 和所设的临时密码登录，按页面要求修改密码。页面默认查北京时间 2026 年 11 月 25 日 08:00，预期在岗为陈立、刘洋。把 UTC 查询时间改为同日 `04:00`，点「查当班」，预期为 0 人。
+
+退出后用 `operator-xu` 登录，完成首次改密。页面应能看到江岸的东、西片区。在浏览器同一会话打开 `http://127.0.0.1:5176/api/v1/staff/workers?at=2026-11-25T00:00:00Z`，预期 HTTP `403`，错误码为 `FORBIDDEN`，响应没有在岗名单。同一地址在 `dispatcher-zhou` 会话中返回 HTTP `200` 和两人名单。对照网点的调度账号 `dispatcher-other` 查同一时间只返回王平。甲、乙驿站站长分别用 `station-leader-a`、`station-leader-b` 登录。
 
 ## 你和 AI 怎么分工
 

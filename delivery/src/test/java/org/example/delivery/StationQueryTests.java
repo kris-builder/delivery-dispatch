@@ -53,8 +53,9 @@ class StationQueryTests {
                 VALUES (101, 'NETWORK', 'JIANGAN-DEMO', '江岸网点（演示）', 'Asia/Shanghai')
                 """).update();
 
-        Flyway.configure().dataSource(dataSource).load().migrate();
+        Flyway.configure().dataSource(dataSource).target("2").load().migrate();
         new ResourceDatabasePopulator(new ClassPathResource("station-query-seed.sql")).execute(dataSource);
+        Flyway.configure().dataSource(dataSource).load().migrate();
     }
 
     @Test
@@ -62,7 +63,12 @@ class StationQueryTests {
         assertEquals(1, jdbc.sql("""
                 SELECT COUNT(*) FROM flyway_schema_history WHERE version = '2' AND success = 1
                 """).query(Integer.class).single(), "Expected the station query migration");
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM flyway_schema_history WHERE version = '3' AND success = 1
+                """).query(Integer.class).single(), "Expected the identity migration");
         assertEquals("JIANGAN-DEMO", jdbc.sql("SELECT code FROM org_unit WHERE id = 101")
+                .query(String.class).single());
+        assertEquals("courier-chen", jdbc.sql("SELECT worker_no FROM worker_profile WHERE id = 301")
                 .query(String.class).single());
     }
 
