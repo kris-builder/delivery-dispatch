@@ -38,6 +38,19 @@ public class StationQueries {
               )
             """;
 
+    private static final String COURIER_FILTER = """
+            FROM worker_profile w
+            WHERE w.unit_id = :unitId AND w.kind = 'NETWORK_COURIER' AND w.active = TRUE
+            """;
+
+    private static final String SHIFT_MEMBER_FILTER = """
+            FROM duty_shift s
+            JOIN shift_member m ON m.shift_id = s.id
+            JOIN worker_profile w ON w.id = m.worker_id AND w.unit_id = s.unit_id
+            WHERE s.unit_id = :unitId AND w.kind = 'NETWORK_COURIER' AND w.active = TRUE
+              AND s.starts_at <= :at AND :at < s.ends_at
+            """;
+
     private final JdbcClient jdbc;
 
     public StationQueries(JdbcClient jdbc) {
@@ -68,23 +81,49 @@ public class StationQueries {
         return queryOnDutyWorkers(staff, shiftId, at, page, pageSize);
     }
 
+    public Page<Worker> couriersForScheduling(StaffContext staff, int page, int pageSize) {
+        StationAccess.requireNetworkStaff(jdbc, staff, true);
+        return queryPage("SELECT w.id, w.display_name ", COURIER_FILTER, Map.of("unitId", staff.unitId()),
+                page, pageSize, (row, rowNumber) -> new Worker(row.getString("id"), row.getString("display_name")));
+    }
+
+    public Page<ShiftMember> shiftMembersAt(StaffContext staff, Instant at, int page, int pageSize) {
+        StationAccess.requireNetworkStaff(jdbc, staff, true);
+        return queryPage("""
+                SELECT s.id AS shift_id, w.id AS worker_id, w.display_name, s.code, s.starts_at, s.ends_at,
+                       m.duty_status, m.version
+                """, SHIFT_MEMBER_FILTER, Map.of("unitId", staff.unitId(), "at", utcTimestamp(at)),
+                page, pageSize, "shift_id, worker_id", (row, rowNumber) -> new ShiftMember(
+                        row.getString("shift_id"), row.getString("worker_id"), row.getString("display_name"),
+                        row.getString("code"), row.getObject("starts_at", LocalDateTime.class).toInstant(ZoneOffset.UTC),
+                        row.getObject("ends_at", LocalDateTime.class).toInstant(ZoneOffset.UTC),
+                        row.getString("duty_status"), row.getString("version")));
+    }
+
     private Page<Worker> queryOnDutyWorkers(StaffContext staff, long shiftId, Instant at, int page, int pageSize) {
         StationAccess.requireNetworkStaff(jdbc, staff, true);
-        LocalDateTime atUtc = LocalDateTime.ofInstant(Objects.requireNonNull(at, "at"), ZoneOffset.UTC)
-                .truncatedTo(ChronoUnit.MICROS);
         return queryPage("SELECT w.id, w.display_name ", ON_DUTY_FILTER,
-                Map.of("unitId", staff.unitId(), "at", atUtc, "shiftId", shiftId), page, pageSize,
+                Map.of("unitId", staff.unitId(), "at", utcTimestamp(at), "shiftId", shiftId), page, pageSize,
                 (row, rowNumber) -> new Worker(row.getString("id"), row.getString("display_name")));
+    }
+
+    private static LocalDateTime utcTimestamp(Instant at) {
+        return LocalDateTime.ofInstant(Objects.requireNonNull(at, "at"), ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
     }
 
     private <T> Page<T> queryPage(String select, String filter, Map<String, ?> parameters,
             int page, int pageSize, RowMapper<T> mapper) {
+        return queryPage(select, filter, parameters, page, pageSize, "id", mapper);
+    }
+
+    private <T> Page<T> queryPage(String select, String filter, Map<String, ?> parameters,
+            int page, int pageSize, String orderBy, RowMapper<T> mapper) {
         if (page < 1 || pageSize < 1 || pageSize > 100) {
             throw new IllegalArgumentException("page must be positive and pageSize must be between 1 and 100");
         }
         long offset = (page - 1L) * pageSize;
         long total = jdbc.sql("SELECT COUNT(*) " + filter).params(parameters).query(Long.class).single();
-        List<T> items = offset >= total ? List.of() : jdbc.sql(select + filter + " ORDER BY id LIMIT :limit OFFSET :offset")
+        List<T> items = offset >= total ? List.of() : jdbc.sql(select + filter + " ORDER BY " + orderBy + " LIMIT :limit OFFSET :offset")
                 .params(parameters).param("limit", pageSize).param("offset", offset).query(mapper).list();
         return new Page<>(items, page, pageSize, total);
     }
@@ -97,4 +136,7 @@ public class StationQueries {
     public record Area(String id, String code, String name, boolean active, Worker regularWorker) {}
 
     public record Worker(String id, String displayName) {}
+
+    public record ShiftMember(String shiftId, String workerId, String displayName, String code,
+                              Instant startsAt, Instant endsAt, String status, String version) {}
 }

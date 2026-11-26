@@ -38,7 +38,7 @@ class StationQueryController {
         return station.onDutyWorkers(new StaffContext(employee.unitId(), employee.role()), at, page, pageSize);
     }
 
-    private static void requireValidPage(int page, int pageSize) {
+    static void requireValidPage(int page, int pageSize) {
         if (page < 1 || pageSize < 1 || pageSize > 100) {
             throw new ApiProblems.Failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "页码至少为 1，每页条数须在 1 到 100 之间。");
         }

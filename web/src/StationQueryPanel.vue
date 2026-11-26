@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ApiError, requestJson } from './api'
+import StationSchedulingPanel from './StationSchedulingPanel.vue'
+import { createStationTime } from './stationTime'
 import example from '../../fixtures/station-01-query.json'
 
 interface Page<T> { items: T[]; page: number; pageSize: number; total: number }
@@ -16,11 +18,9 @@ const areaLoading = ref(false)
 const workerLoading = ref(false)
 const areaError = ref('')
 const workerError = ref('')
-const utcInput = ref(example.at.slice(0, 16))
+const stationTime = createStationTime(props.timeZone)
+const localInput = ref(stationTime.toInput(example.at))
 const currentAt = ref('')
-const formatTime = new Intl.DateTimeFormat('zh-CN', {
-  timeZone: props.timeZone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23',
-})
 
 function reportError(reason: unknown) {
   if (lifetime.signal.aborted) return ''
@@ -55,12 +55,12 @@ async function loadWorkers(page: number, at: string) {
 }
 
 function queryWorkers() {
-  const selected = new Date(`${utcInput.value}Z`)
-  if (!Number.isFinite(selected.getTime())) {
-    workerError.value = '请选择有效的查询时间。'
+  const at = stationTime.fromInput(localInput.value)
+  if (!at) {
+    workerError.value = '请选择有效的网点时间。遇到时钟切换时，请改选其他时间。'
     return
   }
-  void loadWorkers(1, selected.toISOString())
+  void loadWorkers(1, at)
 }
 
 onMounted(() => {
@@ -73,6 +73,7 @@ onBeforeUnmount(() => lifetime.abort())
 <template>
   <section class="panel station" aria-labelledby="station-title">
     <h2 id="station-title">{{ dispatcher ? '片区与当班人员' : '本网点片区' }}</h2>
+    <p v-if="dispatcher">网点时区 {{ timeZone }}</p>
     <div class="station-results" :class="{ dispatcher }">
       <section aria-label="启用片区">
         <table v-if="areas?.items.length">
@@ -99,13 +100,13 @@ onBeforeUnmount(() => lifetime.abort())
       <section v-if="dispatcher" class="roster" aria-labelledby="roster-title">
         <h3 id="roster-title">在岗配送员</h3>
         <form class="query" @submit.prevent="queryWorkers">
-          <label>查询时间（UTC） <input v-model="utcInput" required type="datetime-local"></label>
+          <label>查询时间（网点时间） <input v-model="localInput" required type="datetime-local"></label>
           <button :disabled="workerLoading">查当班</button>
         </form>
         <p v-if="workerLoading" role="status">正在查询当班人员</p>
         <p v-if="workerError" role="alert" class="error">{{ workerError }}</p>
         <div v-if="workers" aria-live="polite">
-          <p><time :datetime="currentAt">{{ formatTime.format(new Date(currentAt)) }}（网点时间）</time> · {{ workers.total }} 人在岗</p>
+          <p><time :datetime="currentAt">{{ stationTime.format(currentAt) }}（网点时间）</time> · {{ workers.total }} 人在岗</p>
           <ul v-if="workers.items.length">
             <li v-for="worker in workers.items" :key="worker.id">{{ worker.displayName }}</li>
           </ul>
@@ -116,6 +117,13 @@ onBeforeUnmount(() => lifetime.abort())
         </div>
       </section>
     </div>
+    <StationSchedulingPanel
+      v-if="dispatcher && currentAt"
+      :at="currentAt"
+      :time-zone="timeZone"
+      @updated="loadWorkers(1, currentAt)"
+      @session-expired="emit('sessionExpired')"
+    />
   </section>
 </template>
 
