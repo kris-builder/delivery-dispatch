@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { ApiError, postJson, requestJson } from './api'
 import StationQueryPanel from './StationQueryPanel.vue'
+import InboundBatchPanel from './InboundBatchPanel.vue'
 
 interface EmployeeSession {
   type: 'EMPLOYEE'
@@ -135,6 +136,12 @@ async function logout() {
       :key="employee.employeeId"
       :dispatcher="employee.role === 'NETWORK_DISPATCHER'"
       :time-zone="employee.timeZone"
+      @session-expired="sessionExpired"
+    />
+    <InboundBatchPanel
+      v-if="employee && !employee.mustChangePassword && ['NETWORK_DISPATCHER', 'NETWORK_OPERATOR'].includes(employee.role)"
+      :key="employee.employeeId"
+      :dispatcher="employee.role === 'NETWORK_DISPATCHER'"
       @session-expired="sessionExpired"
     />
     <p v-if="error" class="error" role="alert">{{ error }}</p>

@@ -28,14 +28,26 @@ final class AuthHttpClient implements AutoCloseable {
         return send(HttpRequest.newBuilder(URI.create(base + path)));
     }
 
-    HttpResponse<String> post(String path, Map<String, String> input, JsonNode csrf) throws Exception {
+    HttpResponse<String> post(String path, Map<String, ?> input, JsonNode csrf) throws Exception {
+        return post(path, input, csrf, null);
+    }
+
+    HttpResponse<String> post(String path, Map<String, ?> input, JsonNode csrf, String operationKey) throws Exception {
+        return post(path, input, csrf, operationKey, Duration.ofSeconds(10));
+    }
+
+    HttpResponse<String> post(String path, Map<String, ?> input, JsonNode csrf, String operationKey, Duration timeout)
+            throws Exception {
         var request = HttpRequest.newBuilder(URI.create(base + path))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(input)));
         if (csrf != null) {
             request.header(csrf.path("headerName").asText(), csrf.path("token").asText());
         }
-        return send(request);
+        if (operationKey != null) {
+            request.header("Idempotency-Key", operationKey);
+        }
+        return client.send(request.timeout(timeout).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     JsonNode csrf() throws Exception {
