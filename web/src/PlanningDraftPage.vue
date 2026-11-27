@@ -155,8 +155,12 @@ function assignSupport() {
         expectedVersion: current.version, parcelIds: selected.value, workerId: supportWorkerId.value, reason: reason.value,
       }),
     })
-    await showDraft(updated)
-    status.value = '调整已保存。'
+    status.value = updated.version === current.version ? '所选运单的拟领件人已是该配送员。' : '调整已保存。'
+    try {
+      await showDraft(updated)
+    } catch (failure) {
+      error.value = failure instanceof Error ? `候选人刷新失败。 ${failure.message}` : '候选人刷新失败。'
+    }
   })
 }
 </script>
@@ -167,8 +171,8 @@ function assignSupport() {
       <h1>配送草案验收</h1>
       <a href="/">员工入口</a>
     </header>
-    <p v-if="error" role="alert">{{ error }}</p>
     <p v-if="status" role="status">{{ status }}</p>
+    <p v-if="error" role="alert">{{ error }}</p>
     <section v-if="ready" aria-labelledby="create-title">
       <h2 id="create-title">保存草案</h2>
       <p v-if="!batches.length">当前网点没有 PLANNING-03-DEMO 样例批次。</p>

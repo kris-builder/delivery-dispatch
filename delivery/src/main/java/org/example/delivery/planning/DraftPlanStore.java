@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.example.delivery.identity.EmployeePrincipal;
 import org.example.delivery.station.StationQueries;
@@ -68,9 +69,14 @@ class DraftPlanStore {
                     "所选运单包含当前不可安排的件，请刷新后核对。");
         }
 
+        var changes = items.stream().filter(item -> !Objects.equals(item.oldWorkerId(), workerId)).toList();
+        if (changes.isEmpty()) {
+            return detail(network, id);
+        }
+
         long version = draft.version() + 1;
         LocalDateTime changedAt = BeijingTime.now();
-        for (var item : items) {
+        for (var item : changes) {
             jdbc.sql("""
                     UPDATE plan_item SET proposed_worker_id = :worker, proposed_worker_name = :name, reason_code = NULL
                     WHERE plan_id = :plan AND parcel_id = :parcel

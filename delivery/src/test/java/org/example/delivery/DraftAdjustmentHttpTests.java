@@ -131,6 +131,34 @@ class DraftAdjustmentHttpTests {
     }
 
     @Test
+    void logsOnlyActualReassignmentsAndKeepsTheVersionWhenEveryoneAlreadyMatches() throws Exception {
+        try (var dispatcher = login(port, "dispatcher-zhou")) {
+            var plan = create(dispatcher);
+            var path = PLANS + "/" + plan.path("id").asText();
+            var group = plan.path("groups").get(0).path("items").findValues("parcelId").stream()
+                    .map(JsonNode::asText).toList();
+            expect(200, dispatcher.patch(path, adjustment("0", List.of(group.getFirst()), support), dispatcher.csrf()));
+
+            var mixed = expect(200, dispatcher.patch(path, adjustment("1", group, support), dispatcher.csrf()));
+            assertEquals("2", mixed.path("version").asText());
+            var changes = mixed.path("adjustments");
+            assertEquals(group.size(), changes.size());
+            assertEquals(group.subList(1, group.size()), changes.valueStream()
+                    .filter(change -> "2".equals(change.path("planVersion").asText()))
+                    .map(change -> change.path("parcelId").asText()).toList());
+            assertEquals("1", changes.get(changes.size() - 1).path("planVersion").asText());
+            assertTrue(mixed.path("groups").get(0).path("items").findValues("proposedWorkerId").stream()
+                    .allMatch(worker -> support.equals(worker.asText())));
+
+            assertEquals(mixed, expect(200, dispatcher.patch(path, adjustment("2", group, support), dispatcher.csrf())));
+            assertEquals(mixed, expect(200, dispatcher.get(path)));
+            assertEquals(group.size(), auditCount(plan));
+            assertEquals(2, jdbc.sql("SELECT version FROM delivery_plan WHERE id = :id")
+                    .param("id", plan.path("id").asText()).query(Integer.class).single());
+        }
+    }
+
+    @Test
     void recordsPendingToSupportWhenTheRegularCourierIsOnLeave() throws Exception {
         jdbc.sql("UPDATE shift_member SET duty_status = 'ON_LEAVE' WHERE shift_id = :shift AND worker_id = :worker")
                 .param("shift", shiftId).param("worker", chen).update();
