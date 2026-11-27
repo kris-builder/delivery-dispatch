@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.example.delivery.identity.EmployeePrincipal;
+import org.example.delivery.station.StationQueries;
 import org.example.delivery.time.BeijingTime;
 import org.example.delivery.web.ApiProblems;
 import org.springframework.context.annotation.Profile;
@@ -21,9 +22,71 @@ import org.springframework.transaction.annotation.Transactional;
 @Profile("planning-demo")
 class DraftPlanStore {
     private final JdbcClient jdbc;
+    private final StationQueries station;
 
-    DraftPlanStore(JdbcClient jdbc) {
+    DraftPlanStore(JdbcClient jdbc, StationQueries station) {
         this.jdbc = jdbc;
+        this.station = station;
+    }
+
+    @Transactional
+    public Detail assignSupport(EmployeePrincipal employee, long id, long expectedVersion, List<Long> selected,
+                                long workerId, String reason) {
+        long network = employee.unitId();
+        var draft = jdbc.sql("""
+                SELECT shift_id, inbound_batch_id, evaluated_at, status, version
+                FROM delivery_plan WHERE id = :id AND network_id = :network FOR UPDATE
+                """).param("id", id).param("network", network).query((row, index) -> new LockedDraft(
+                row.getLong("shift_id"), row.getLong("inbound_batch_id"),
+                BeijingTime.fromDatabase(row.getObject("evaluated_at", LocalDateTime.class)),
+                row.getString("status"), row.getLong("version"))).optional().orElseThrow(DraftPlanStore::notFound);
+        if (draft.version() != expectedVersion || !"DRAFT".equals(draft.status())) {
+            throw new ApiProblems.Failure(HttpStatus.CONFLICT, "DRAFT_VERSION_CONFLICT", "草案已变化，请重新打开后核对。");
+        }
+        var scope = new StationQueries.StaffContext(network, employee.role());
+        var worker = DraftPlans.readAll(page ->
+                station.onDutyWorkersForShift(scope, draft.shiftId(), draft.evaluatedAt().toInstant(), page, 100))
+                .stream().filter(candidate -> candidate.id().equals(Long.toString(workerId))).findFirst()
+                .orElseThrow(() -> new ApiProblems.Failure(HttpStatus.CONFLICT, "DRAFT_WORKER_UNAVAILABLE",
+                        "目标配送员不在本网点所选班次的在岗名单中。"));
+
+        var items = jdbc.sql("""
+                SELECT i.parcel_id, i.proposed_worker_id
+                FROM plan_item i
+                JOIN parcel p ON p.id = i.parcel_id AND p.version = i.parcel_version
+                JOIN inbound_receipt r ON r.parcel_id = p.id AND r.batch_id = :batch AND r.voided_at IS NULL
+                JOIN delivery_area a ON a.id = i.target_area_id AND a.network_id = :network AND a.active
+                WHERE i.plan_id = :id AND i.parcel_id IN (:selected)
+                  AND p.network_id = :network AND p.stage = 'IN_STATION'
+                  AND p.holder_kind = 'NETWORK' AND p.holder_unit_id = :network
+                ORDER BY i.parcel_id FOR UPDATE OF i, p, r
+                """).param("batch", draft.batchId()).param("network", network)
+                .param("id", id).param("selected", selected).query((row, index) -> new SelectedItem(
+                row.getLong("parcel_id"), row.getObject("proposed_worker_id", Long.class))).list();
+        if (items.size() != selected.size()) {
+            throw new ApiProblems.Failure(HttpStatus.CONFLICT, "DRAFT_PARCEL_CHANGED",
+                    "所选运单包含当前不可安排的件，请刷新后核对。");
+        }
+
+        long version = draft.version() + 1;
+        LocalDateTime changedAt = BeijingTime.now();
+        for (var item : items) {
+            jdbc.sql("""
+                    UPDATE plan_item SET proposed_worker_id = :worker, proposed_worker_name = :name, reason_code = NULL
+                    WHERE plan_id = :plan AND parcel_id = :parcel
+                    """).param("worker", workerId).param("name", worker.displayName())
+                    .param("plan", id).param("parcel", item.parcelId()).update();
+            jdbc.sql("""
+                    INSERT INTO plan_adjustment (plan_id, parcel_id, plan_version, old_worker_id, new_worker_id,
+                                                 reason, changed_by, changed_at)
+                    VALUES (:plan, :parcel, :version, :oldWorker, :worker, :reason, :actor, :changedAt)
+                    """).param("plan", id).param("parcel", item.parcelId()).param("version", version)
+                    .param("oldWorker", item.oldWorkerId()).param("worker", workerId).param("reason", reason)
+                    .param("actor", employee.accountId()).param("changedAt", changedAt).update();
+        }
+        jdbc.sql("UPDATE delivery_plan SET version = :version WHERE id = :id")
+                .param("version", version).param("id", id).update();
+        return detail(network, id);
     }
 
     @Transactional
@@ -81,8 +144,7 @@ class DraftPlanStore {
                 BeijingTime.fromDatabase(row.getObject("created_at", LocalDateTime.class)),
                 BeijingTime.fromDatabase(row.getObject("evaluated_at", LocalDateTime.class)),
                 row.getString("status"), row.getString("version"))).optional()
-                .orElseThrow(() -> new ApiProblems.Failure(HttpStatus.NOT_FOUND, "DELIVERY_PLAN_NOT_FOUND",
-                        "本网点查不到该配送草案。"));
+                .orElseThrow(DraftPlanStore::notFound);
 
         var rows = jdbc.sql("""
                 SELECT i.parcel_id, i.parcel_version, p.waybill_no, i.target_area_id, i.target_area_name,
@@ -101,11 +163,33 @@ class DraftPlanStore {
         }
         var groups = byArea.entrySet().stream().map(entry -> Group.of(entry.getKey(), entry.getValue())).toList();
         int assigned = groups.stream().mapToInt(Group::assigned).sum();
+        var adjustments = jdbc.sql("""
+                SELECT a.parcel_id, p.waybill_no, a.plan_version, a.old_worker_id, old_worker.display_name AS old_name,
+                       a.new_worker_id, new_worker.display_name AS new_name, a.reason, a.changed_by,
+                       e.login_name, a.changed_at
+                FROM plan_adjustment a
+                JOIN parcel p ON p.id = a.parcel_id
+                JOIN employee_account e ON e.id = a.changed_by
+                LEFT JOIN worker_profile old_worker ON old_worker.id = a.old_worker_id
+                LEFT JOIN worker_profile new_worker ON new_worker.id = a.new_worker_id
+                WHERE a.plan_id = :id ORDER BY a.plan_version DESC, a.parcel_id
+                """).param("id", id).query((row, index) -> new Adjustment(
+                row.getString("parcel_id"), row.getString("waybill_no"), row.getString("plan_version"),
+                row.getString("old_worker_id"), row.getString("old_name"), row.getString("new_worker_id"),
+                row.getString("new_name"), row.getString("reason"), row.getString("changed_by"),
+                row.getString("login_name"), BeijingTime.fromDatabase(row.getObject("changed_at", LocalDateTime.class))))
+                .list();
         return new Detail(header.id(), header.batchId(), header.batchNumber(), header.shiftId(), header.createdBy(),
                 header.createdAt(), header.evaluatedAt(), header.status(), header.version(),
-                rows.size(), assigned, rows.size() - assigned, groups);
+                rows.size(), assigned, rows.size() - assigned, groups, adjustments);
     }
 
+    private static ApiProblems.Failure notFound() {
+        return new ApiProblems.Failure(HttpStatus.NOT_FOUND, "DELIVERY_PLAN_NOT_FOUND", "本网点查不到该配送草案。");
+    }
+
+    private record LockedDraft(long shiftId, long batchId, OffsetDateTime evaluatedAt, String status, long version) {}
+    private record SelectedItem(long parcelId, Long oldWorkerId) {}
     private record Header(String id, String batchId, String batchNumber, String shiftId, String createdBy,
                           OffsetDateTime createdAt, OffsetDateTime evaluatedAt, String status, String version) {}
     private record AreaKey(String id, String name) {}
@@ -113,6 +197,9 @@ class DraftPlanStore {
 
     record Item(String parcelId, String waybillNo, String parcelVersion, String proposedWorkerId,
                 String proposedWorkerName, String pendingReason) {}
+    record Adjustment(String parcelId, String waybillNo, String planVersion, String oldWorkerId, String oldWorkerName,
+                      String newWorkerId, String newWorkerName, String reason, String changedBy, String changedByName,
+                      OffsetDateTime changedAt) {}
     record Group(String areaId, String areaName, int total, int assigned, int pending, List<Item> items) {
         static Group of(AreaKey area, List<Item> items) {
             int assigned = (int) items.stream().filter(item -> item.proposedWorkerId() != null).count();
@@ -121,5 +208,5 @@ class DraftPlanStore {
     }
     record Detail(String id, String batchId, String batchNumber, String shiftId, String createdBy, OffsetDateTime createdAt,
                   OffsetDateTime evaluatedAt, String status, String version, int total, int assigned, int pending,
-                  List<Group> groups) {}
+                  List<Group> groups, List<Adjustment> adjustments) {}
 }

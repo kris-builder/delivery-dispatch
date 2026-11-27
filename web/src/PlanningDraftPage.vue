@@ -11,9 +11,15 @@ type Item = {
   proposedWorkerName: string | null; pendingReason: string | null
 }
 type Group = { areaId: string | null; areaName: string | null; total: number; assigned: number; pending: number; items: Item[] }
+type Worker = { id: string; displayName: string }
+type Adjustment = {
+  parcelId: string; waybillNo: string; planVersion: string; oldWorkerName: string | null
+  newWorkerName: string; reason: string; changedByName: string; changedAt: string
+}
 type Draft = {
   id: string; version: string; createdBy: string; createdAt: string; evaluatedAt: string
   batchNumber: string; shiftId: string; total: number; assigned: number; pending: number; groups: Group[]
+  adjustments: Adjustment[]
 }
 
 const time = createStationTime()
@@ -30,6 +36,10 @@ const at = ref('2026-11-25T08:00')
 const queriedAt = ref('')
 const reopenId = ref('')
 const draft = ref<Draft | null>(null)
+const workers = ref<Worker[]>([])
+const selected = ref<string[]>([])
+const supportWorkerId = ref('')
+const reason = ref('')
 const pendingLabels: Record<string, string> = {
   AREA_UNCONFIRMED: '片区待确认',
   NO_REGULAR_WORKER: '无常规责任人',
@@ -94,16 +104,59 @@ function createDraft() {
     const saved = await postJson<Draft>('/staff/delivery-plans', {
       batchId: batchId.value, shiftId: shiftId.value, at: queriedAt.value,
     })
-    draft.value = saved
-    reopenId.value = saved.id
+    await showDraft(saved)
     status.value = '草案已保存。'
   })
 }
 
 function reopenDraft() {
   return run(async () => {
-    draft.value = await requestJson<Draft>(`/staff/delivery-plans/${encodeURIComponent(reopenId.value)}`)
+    await showDraft(await requestJson<Draft>(`/staff/delivery-plans/${encodeURIComponent(reopenId.value)}`))
     status.value = '已重新读取保存的草案。'
+  })
+}
+
+async function showDraft(saved: Draft) {
+  draft.value = saved
+  reopenId.value = saved.id
+  selected.value = []
+  supportWorkerId.value = ''
+  reason.value = ''
+  workers.value = []
+  const found: Worker[] = []
+  for (let page = 1; ; page++) {
+    const result = await requestJson<{ items: Worker[]; total: number }>(
+      `/staff/delivery-plans/${saved.id}/support-workers?page=${page}&pageSize=100`,
+    )
+    found.push(...result.items)
+    if (found.length >= result.total || result.items.length === 0) break
+  }
+  workers.value = found
+}
+
+function toggleGroup(group: Group) {
+  const ids = group.items.map(item => item.parcelId)
+  if (ids.every(id => selected.value.includes(id))) {
+    selected.value = selected.value.filter(id => !ids.includes(id))
+  } else {
+    selected.value = [...new Set([...selected.value, ...ids])]
+  }
+}
+
+function assignSupport() {
+  const current = draft.value
+  if (!current || !selected.value.length || !supportWorkerId.value || !reason.value.trim()) return
+  return run(async () => {
+    const csrf = await requestJson<{ headerName: string; token: string }>('/auth/csrf')
+    const updated = await requestJson<Draft>(`/staff/delivery-plans/${current.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', [csrf.headerName]: csrf.token },
+      body: JSON.stringify({
+        expectedVersion: current.version, parcelIds: selected.value, workerId: supportWorkerId.value, reason: reason.value,
+      }),
+    })
+    await showDraft(updated)
+    status.value = '调整已保存。'
   })
 }
 </script>
@@ -155,14 +208,47 @@ function reopenDraft() {
       <p>总数 {{ draft.total }} / 已拟派 {{ draft.assigned }} / 待安排 {{ draft.pending }}</p>
       <details v-for="group in draft.groups" :key="group.areaId ?? 'unconfirmed'" open>
         <summary>{{ group.areaName ?? '待分区' }} · 总数 {{ group.total }} / 已拟派 {{ group.assigned }} / 待安排 {{ group.pending }}</summary>
+        <button v-if="group.areaId" type="button" :disabled="busy || !workers.length" @click="toggleGroup(group)">
+          {{ group.items.every(item => selected.includes(item.parcelId)) ? '取消整组选中' : '选中整组' }}
+        </button>
         <table>
-          <thead><tr><th scope="col">运单号</th><th scope="col">包裹版本</th><th scope="col">拟领件人</th><th scope="col">草案状态</th></tr></thead>
+          <thead><tr><th scope="col">选择</th><th scope="col">运单号</th><th scope="col">包裹版本</th><th scope="col">拟领件人</th><th scope="col">草案状态</th></tr></thead>
           <tbody><tr v-for="item in group.items" :key="item.parcelId">
+            <td>
+              <input v-if="group.areaId" v-model="selected" type="checkbox" :value="item.parcelId"
+                :aria-label="`选择运单 ${item.waybillNo}`" :disabled="busy || !workers.length">
+            </td>
             <td>{{ item.waybillNo }}</td><td>{{ item.parcelVersion }}</td><td>{{ item.proposedWorkerName ?? '—' }}</td>
             <td>{{ item.pendingReason ? (pendingLabels[item.pendingReason] ?? item.pendingReason) : '已拟派' }}</td>
           </tr></tbody>
         </table>
       </details>
+      <h3>安排当班支援</h3>
+      <p v-if="!workers.length">该班次暂无在岗配送员。</p>
+      <form v-else @submit.prevent="assignSupport">
+        <label>当班配送员
+          <select v-model="supportWorkerId" :disabled="busy" required>
+            <option value="" disabled>请选择</option>
+            <option v-for="worker in workers" :key="worker.id" :value="worker.id">{{ worker.displayName }}</option>
+          </select>
+        </label>
+        <label>调整原因 <input v-model="reason" maxlength="500" :disabled="busy" required></label>
+        <button type="submit" :disabled="busy || !selected.length || !supportWorkerId || !reason.trim()">
+          安排选中 {{ selected.length }} 票
+        </button>
+      </form>
+      <template v-if="draft.adjustments.length">
+        <h3>调整记录</h3>
+        <table>
+          <thead><tr><th scope="col">运单号</th><th scope="col">前后拟领件人</th><th scope="col">原因</th><th scope="col">操作人与时间（北京时间）</th></tr></thead>
+          <tbody>
+            <tr v-for="change in draft.adjustments" :key="`${change.planVersion}-${change.parcelId}`">
+              <td>{{ change.waybillNo }}</td><td>{{ change.oldWorkerName ?? '待安排' }} → {{ change.newWorkerName }}</td>
+              <td>{{ change.reason }}</td><td>{{ change.changedByName }} · {{ time.format(change.changedAt) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
     </section>
   </main>
 </template>

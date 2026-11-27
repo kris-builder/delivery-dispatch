@@ -3,6 +3,7 @@ package org.example.delivery.planning;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.function.Function;
 import java.util.function.IntFunction;
@@ -58,11 +59,38 @@ class DraftPlans {
         return store.detail(employee.unitId(), id);
     }
 
+    DraftPlanStore.Detail assignSupport(EmployeePrincipal employee, long id, AdjustDraft input) {
+        requireDispatcher(employee);
+        long version = decimal(input.expectedVersion(), true, "草案版本");
+        long workerId = decimal(input.workerId(), false, "目标配送员");
+        if (input.parcelIds() == null || input.parcelIds().isEmpty()) {
+            throw invalid("请选择需要调整的运单。");
+        }
+        var selected = input.parcelIds().stream().map(parcel -> decimal(parcel, false, "包裹标识")).toList();
+        if (new HashSet<>(selected).size() != selected.size()) {
+            throw invalid("同一包裹只能选择一次。");
+        }
+        if (input.reason() == null || !input.reason().isTextual()) {
+            throw invalid("请填写调整原因。");
+        }
+        String reason = input.reason().asText().strip();
+        if (reason.isBlank() || reason.length() > 500) {
+            throw invalid("调整原因须为 1 到 500 个字符。");
+        }
+        return store.assignSupport(employee, id, version, selected, workerId, reason);
+    }
+
+    Page<StationQueries.Worker> supportWorkers(EmployeePrincipal employee, long id, int page, int pageSize) {
+        requireDispatcher(employee);
+        validatePage(page, pageSize);
+        var draft = store.detail(employee.unitId(), id);
+        return station.onDutyWorkersForShift(new StaffContext(employee.unitId(), employee.role()),
+                Long.parseLong(draft.shiftId()), draft.evaluatedAt().toInstant(), page, pageSize);
+    }
+
     Page<StationQueries.Shift> eligibleShifts(EmployeePrincipal employee, Instant at, int page, int pageSize) {
         requireDispatcher(employee);
-        if (page < 1 || pageSize < 1 || pageSize > 100) {
-            throw new ApiProblems.Failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "页码至少为 1，每页条数须在 1 到 100 之间。");
-        }
+        validatePage(page, pageSize);
         return station.shiftsAt(new StaffContext(employee.unitId(), employee.role()), at, page, pageSize);
     }
 
@@ -94,7 +122,7 @@ class DraftPlans {
         return new Prepared(batchId, shiftId, BeijingTime.fromDatabase(BeijingTime.forDatabase(instant)), lines);
     }
 
-    private static <T> List<T> readAll(IntFunction<Page<T>> lookup) {
+    static <T> List<T> readAll(IntFunction<Page<T>> lookup) {
         List<T> items = new ArrayList<>();
         int pageNumber = 1;
         Page<T> page;
@@ -113,20 +141,35 @@ class DraftPlans {
     }
 
     private static long positiveId(JsonNode input) {
+        return decimal(input, false, "批次及班次");
+    }
+
+    private static long decimal(JsonNode input, boolean allowZero, String field) {
         if (input != null && input.isTextual()) {
             String value = input.asText();
             try {
                 long id = Long.parseLong(value);
-                if (id > 0 && Long.toString(id).equals(value)) {
+                if (id >= (allowZero ? 0 : 1) && Long.toString(id).equals(value)) {
                     return id;
                 }
             } catch (NumberFormatException ignored) {
                 // Return the same input error for malformed and out-of-range identifiers.
             }
         }
-        throw new ApiProblems.Failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "批次及班次须为有效标识。");
+        throw invalid("请提交有效的" + field + "。");
     }
 
+    private static void validatePage(int page, int pageSize) {
+        if (page < 1 || pageSize < 1 || pageSize > 100) {
+            throw invalid("页码至少为 1，每页条数须在 1 到 100 之间。");
+        }
+    }
+
+    private static ApiProblems.Failure invalid(String detail) {
+        return new ApiProblems.Failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", detail);
+    }
+
+    record AdjustDraft(JsonNode expectedVersion, List<JsonNode> parcelIds, JsonNode workerId, JsonNode reason) {}
     record CreateDraft(JsonNode batchId, JsonNode shiftId, OffsetDateTime at) {}
     record Prepared(long batchId, long shiftId, OffsetDateTime evaluatedAt, List<Line> lines) {}
     record Line(ReceiptSnapshot receipt, DraftGenerator.Area area, DraftGenerator.Item item) {}

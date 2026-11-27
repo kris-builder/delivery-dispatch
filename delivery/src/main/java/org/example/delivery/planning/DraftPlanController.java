@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -37,6 +38,20 @@ class DraftPlanController {
     @GetMapping("/{id}")
     DraftPlanStore.Detail detail(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable long id) {
         return drafts.detail(employee, id);
+    }
+
+    @PatchMapping("/{id}")
+    DraftPlanStore.Detail assignSupport(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable long id,
+                                      @RequestBody DraftPlans.AdjustDraft input) {
+        return drafts.assignSupport(employee, id, input);
+    }
+
+    @GetMapping("/{id}/support-workers")
+    StationQueries.Page<StationQueries.Worker> supportWorkers(@AuthenticationPrincipal EmployeePrincipal employee,
+                                                            @PathVariable long id,
+                                                            @RequestParam(defaultValue = "1") int page,
+                                                            @RequestParam(defaultValue = "20") int pageSize) {
+        return drafts.supportWorkers(employee, id, page, pageSize);
     }
 
     @GetMapping("/eligible-shifts")
