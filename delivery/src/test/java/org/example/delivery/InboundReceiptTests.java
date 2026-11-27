@@ -43,7 +43,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Import({TestcontainersConfiguration.class, InboundReceiptTests.TimeoutConfiguration.class})
-@ActiveProfiles("identity-demo")
+@ActiveProfiles({"identity-demo", "planning-demo"})
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = "delivery.demo.temporary-password=Demo-Temporary-001")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -73,6 +73,157 @@ class InboundReceiptTests {
         addEmployee("credit-scanner-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
         addEmployee("credit-assignee-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
         addEmployee("credit-boundary-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
+    }
+
+    @Test
+    void registersDamageAndMissingLabelWithoutLeakingIntoPlanningOrCredits() throws Exception {
+        String batch = importBatch("PLANNING-03-DEMO",
+                List.of(line("000726030001", "东"), line("000726030002", "东")));
+        String path = quarantine(batch);
+        try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou");
+             var other = login(port, "operator-local-test"); var threads = Executors.newFixedThreadPool(2)) {
+            var csrf = operator.csrf();
+            expect(201, operator.post(scan(batch), body("000726030001"), csrf, "quarantine-normal"));
+            var damage = Map.of("kind", "DAMAGED", "waybillNo", "000726030002", "note", "外箱破损",
+                    "evidenceRef", "到货照片 A");
+            var otherCsrf = other.csrf();
+            var damageStart = new CountDownLatch(1);
+            var firstDamage = threads.submit(() -> {
+                damageStart.await();
+                return operator.post(path, damage, csrf, "quarantine-damage");
+            });
+            var secondDamage = threads.submit(() -> {
+                damageStart.await();
+                return other.post(path, damage, otherCsrf, "quarantine-damage-other");
+            });
+            damageStart.countDown();
+            var registered = expect(200, firstDamage.get(15, TimeUnit.SECONDS));
+            assertEquals(registered, expect(200, secondDamage.get(15, TimeUnit.SECONDS)));
+            assertEquals("UPSTREAM_REVIEW", registered.path("status").asText());
+            assertEquals("到货照片 A", registered.path("evidenceRef").asText());
+            assertEquals(registered, expect(200, operator.post(path, damage, csrf, "quarantine-damage-repeat")));
+            assertEquals("QUARANTINED", expect(200, operator.post(scan(batch), body("000726030002"), csrf,
+                    "quarantine-damage-rescan")).path("status").asText());
+            var missingInput = Map.of("kind", "MISSING_LABEL", "note", "面单无法辨认");
+            var missingStart = new CountDownLatch(1);
+            var firstMissing = threads.submit(() -> {
+                missingStart.await();
+                return operator.post(path, missingInput, csrf, "quarantine-missing");
+            });
+            var retryMissing = threads.submit(() -> {
+                missingStart.await();
+                return operator.post(path, missingInput, csrf, "quarantine-missing");
+            });
+            missingStart.countDown();
+            var missing = expect(200, firstMissing.get(15, TimeUnit.SECONDS));
+            assertTrue(missing.path("temporaryNo").asText().startsWith("IN-"));
+            assertEquals(missing, expect(200, retryMissing.get(15, TimeUnit.SECONDS)));
+            var detail = expect(200, operator.get(BATCHES + "/" + batch));
+            assertEquals(2, detail.path("receivedCount").asInt());
+            assertEquals(1, detail.path("assignedCount").asInt());
+            assertEquals(0, detail.path("pendingAreaCount").asInt());
+            assertEquals(1, detail.path("sortCreditCount").asInt());
+            assertEquals(2, detail.path("quarantines").size());
+            assertEquals("QUARANTINED", expect(200, operator.get(lookup("000726030002"))).path("status").asText());
+            expect(409, operator.post(assignment(parcelId("000726030002")), Map.of("areaId",
+                    areaId("JIANGAN-DEMO", "WEST")), csrf, "quarantine-assign"));
+            assertTrue(expect(200, operator.get("/staff/parcels/pending-area")).findValues("waybillNo").stream()
+                    .noneMatch(node -> "000726030002".equals(node.asText())));
+            String at = "2026-11-25T08:00:00+08:00";
+            String shift = expect(200, dispatcher.get("/staff/shifts?at=2026-11-25T08:00:00%2B08:00"))
+                    .path("items").get(0).path("shiftId").asText();
+            var plan = expect(201, dispatcher.post("/staff/delivery-plans",
+                    Map.of("batchId", batch, "shiftId", shift, "at", at), dispatcher.csrf()));
+            assertEquals(1, plan.path("total").asInt());
+            assertEquals(List.of("000726030001"), plan.findValues("waybillNo").stream().map(v -> v.asText()).toList());
+            var time = OffsetDateTime.parse(registered.path("reportedAt").asText());
+            assertEquals(ZoneOffset.ofHours(8), time.getOffset());
+            assertEquals(time.toLocalDateTime(), jdbc.sql("SELECT reported_at FROM inbound_quarantine WHERE id = :id")
+                    .param("id", registered.path("id").asText())
+                    .query((row, i) -> row.getObject(1, LocalDateTime.class)).single());
+        }
+    }
+
+    @Test
+    void requiresPhysicalConfirmationAndDeduplicatesUnlistedWaybillAcrossOperators() throws Exception {
+        String batch = importBatch("QUARANTINE-UNLISTED", List.of(line("00094001", "东")));
+        importBatch("QUARANTINE-OTHER", List.of(line("00094002", "东")));
+        String path = quarantine(batch);
+        try (var first = login(port, "operator-xu"); var second = login(port, "operator-local-test");
+             var foreign = login(port, "operator-foreign-test"); var threads = Executors.newFixedThreadPool(2)) {
+            var a = first.csrf();
+            var b = second.csrf();
+            var input = Map.of("kind", "UNLISTED", "waybillNo", "00094003", "physicalConfirmed", true);
+            expect(400, first.post(path, Map.of("kind", "DAMAGED", "waybillNo", "00094001"), a, "quarantine-no-damage-note"));
+            expect(400, first.post(path, Map.of("kind", "MISSING_LABEL"), a, "quarantine-no-missing-note"));
+            expect(201, first.post(scan(batch), body("00094001"), a, "quarantine-count-baseline"));
+            var before = expect(200, first.get(BATCHES + "/" + batch));
+            assertEquals("INBOUND_BATCH_MISMATCH", expect(409, first.post(scan(batch), body("00094002"), a,
+                    "quarantine-wrong-scan")).path("code").asText());
+            expect(409, first.post(path, Map.of("kind", "UNLISTED", "waybillNo", "00094002", "note", "别批",
+                    "physicalConfirmed", true), a, "quarantine-wrong-registration"));
+            expect(409, first.post(scan(batch), body("00094003"), a, "quarantine-unconfirmed-scan"));
+            expect(400, first.post(path, Map.of("kind", "UNLISTED", "waybillNo", "00094003", "note", "待确认"),
+                    a, "quarantine-unconfirmed"));
+            expect(404, foreign.post(path, input, foreign.csrf(), "quarantine-foreign"));
+            var gate = new CountDownLatch(1);
+            var left = threads.submit(() -> { gate.await(); return first.post(path, input, a, "quarantine-unlisted-a"); });
+            var right = threads.submit(() -> { gate.await(); return second.post(path, input, b, "quarantine-unlisted-b"); });
+            gate.countDown();
+            var original = expect(200, left.get(15, TimeUnit.SECONDS));
+            assertEquals(original, expect(200, right.get(15, TimeUnit.SECONDS)));
+            assertEquals(original, expect(200, first.post(path, input, a, "quarantine-unlisted-a")));
+            assertEquals("00094003", original.path("waybillNo").asText());
+            assertEquals("", original.path("note").asText());
+            assertEquals(batch, original.path("batchId").asText());
+            var firstId = expect(200, first.get("/auth/session")).path("employeeId").asText();
+            var secondId = expect(200, second.get("/auth/session")).path("employeeId").asText();
+            assertTrue(List.of(firstId, secondId).contains(original.path("reportedBy").asText()));
+            var reportedAt = OffsetDateTime.parse(original.path("reportedAt").asText());
+            assertEquals(ZoneOffset.ofHours(8), reportedAt.getOffset());
+            assertEquals(reportedAt.toLocalDateTime(), jdbc.sql("SELECT reported_at FROM inbound_quarantine WHERE id = :id")
+                    .param("id", original.path("id").asText())
+                    .query((row, index) -> row.getObject(1, LocalDateTime.class)).single());
+            assertEquals("WAYBILL_QUARANTINED", expect(409, first.post(scan(batch), body("00094003"), a,
+                    "quarantine-rescan-unlisted")).path("code").asText());
+            var detail = expect(200, first.get(BATCHES + "/" + batch));
+            assertEquals(1, before.path("receivedCount").asInt());
+            assertEquals(1, before.path("sortCreditCount").asInt());
+            assertEquals(before.path("expectedCount"), detail.path("expectedCount"));
+            assertEquals(before.path("receivedCount"), detail.path("receivedCount"));
+            assertEquals(before.path("sortCreditCount"), detail.path("sortCreditCount"));
+            assertEquals(1, detail.path("quarantines").size());
+        }
+    }
+
+    @Test
+    void rollsBackDamagedReceiptAndEventWhenQuarantineWriteFails() throws Exception {
+        String batch = importBatch("QUARANTINE-ROLLBACK", List.of(line("00095001", "东")));
+        try (var operator = login(port, "operator-xu")) {
+            var csrf = operator.csrf();
+            var damage = Map.of("kind", "DAMAGED", "waybillNo", "00095001", "note", "故障注入");
+            jdbc.sql("""
+                    ALTER TABLE inbound_quarantine ADD CONSTRAINT fail_quarantine
+                    CHECK (note <> '故障注入')
+                    """).update();
+            try {
+                expect(500, operator.post(quarantine(batch), damage, csrf, "quarantine-rollback"));
+                assertEquals(0, countForBatch("inbound_receipt", batch));
+                assertEquals(0, countForBatch("parcel_event", batch));
+                assertEquals("EXPECTED", expect(200, operator.get(lookup("00095001"))).path("status").asText());
+                assertTrue(expect(200, operator.get(BATCHES + "/" + batch)).path("quarantines").isEmpty());
+            } finally {
+                jdbc.sql("ALTER TABLE inbound_quarantine DROP CHECK fail_quarantine").update();
+            }
+            expect(200, operator.post(quarantine(batch), damage, csrf, "quarantine-rollback"));
+            assertEquals(1, countForBatch("inbound_receipt", batch));
+            assertEquals(1, countForBatch("parcel_event", batch));
+            assertEquals(1, expect(200, operator.get(BATCHES + "/" + batch)).path("quarantines").size());
+        }
+    }
+
+    private static String quarantine(String batch) {
+        return BATCHES + "/" + batch + "/quarantines";
     }
 
     @Test
