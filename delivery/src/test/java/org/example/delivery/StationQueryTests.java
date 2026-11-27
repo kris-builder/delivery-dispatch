@@ -61,7 +61,26 @@ class StationQueryTests {
                 VALUES (501, 102, 'legacy-dispatcher', 'unused-migration-fixture', 'NETWORK_DISPATCHER')
                 """).update();
         jdbc.sql("UPDATE shift_member SET duty_status = 'ON_LEAVE' WHERE shift_id = 402 AND worker_id = 303").update();
+        Flyway.configure().dataSource(dataSource).target("4").load().migrate();
+        jdbc.sql("""
+                INSERT INTO employee_account (id, unit_id, login_name, password_hash, role_code)
+                VALUES (502, 101, 'shift-dispatcher', 'unused-migration-fixture', 'NETWORK_DISPATCHER')
+                """).update();
+        jdbc.sql("UPDATE shift_member SET version = 2, updated_by = 502 WHERE shift_id = 401 AND worker_id = 301").update();
         Flyway.configure().dataSource(dataSource).load().migrate();
+    }
+
+    @Test
+    void upgradesV4WithExistingAreasAndAuditedShiftMembers() {
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM flyway_schema_history WHERE version = '5' AND success = 1
+                """).query(Integer.class).single());
+        assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM area_rule").query(Integer.class).single());
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM shift_member WHERE shift_id = 401 AND worker_id = 301
+                AND version = 2 AND updated_by = 502
+                """).query(Integer.class).single());
+        assertEquals("EAST", jdbc.sql("SELECT code FROM delivery_area WHERE id = 201").query(String.class).single());
     }
 
     @Test
