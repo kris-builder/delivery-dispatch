@@ -17,7 +17,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.example.delivery.fulfillment.InboundAreaMatcher;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -41,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@Import({TestcontainersConfiguration.class, InboundReceiptTests.MatchingContract.class})
+@Import({TestcontainersConfiguration.class, InboundReceiptTests.TimeoutConfiguration.class})
 @ActiveProfiles("identity-demo")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = "delivery.demo.temporary-password=Demo-Temporary-001")
@@ -55,6 +54,14 @@ class InboundReceiptTests {
     void activateAccounts() throws Exception {
         for (String account : List.of("dispatcher-zhou", "operator-xu")) {
             activate(port, account);
+        }
+        try (var dispatcher = login(port, "dispatcher-zhou")) {
+            var csrf = dispatcher.csrf();
+            for (var area : expect(200, dispatcher.get("/staff/areas")).path("items")) {
+                String community = "EAST".equals(area.path("code").asText()) ? "东" : "西";
+                expect(201, dispatcher.post("/staff/area-rules", Map.of("street", "测试街道",
+                        "community", community, "areaId", area.path("id").asText()), csrf));
+            }
         }
         addEmployee("operator-local-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
         addEmployee("operator-foreign-test", "OTHER-DEMO", "NETWORK_OPERATOR");
@@ -158,6 +165,7 @@ class InboundReceiptTests {
             assertEquals(3, detail.path("receivedCount").asInt());
             assertEquals(2, detail.path("assignedCount").asInt());
             assertEquals(1, detail.path("pendingAreaCount").asInt());
+            assertEquals(2, detail.path("sortCreditCount").asInt());
             assertEquals(actor, expect(200, operator.get("/staff/inbound-receipts/" + first.path("receiptId").asText()))
                     .path("receivedBy").asText());
             assertEquals(3, countForBatch("inbound_receipt", id));
@@ -322,25 +330,7 @@ class InboundReceiptTests {
     }
 
     @TestConfiguration(proxyBeanMethods = false)
-    static class MatchingContract {
-        @Bean
-        InboundAreaMatcher matchKnownFixtureAddresses(JdbcClient jdbc) {
-            return (network, street, community) -> {
-                String code = switch (community) {
-                    case "东", "百步亭花园" -> "EAST";
-                    case "西", "安居苑" -> "WEST";
-                    default -> null;
-                };
-                if (code == null) {
-                    return new InboundAreaMatcher.Match(null, InboundAreaMatcher.PendingReason.NO_EFFECTIVE_RULE);
-                }
-                return jdbc.sql("SELECT id, name FROM delivery_area WHERE network_id = :network AND code = :code AND active")
-                        .param("network", network).param("code", code).query((row, index) ->
-                                new InboundAreaMatcher.Match(new InboundAreaMatcher.Area(row.getLong("id"),
-                                        row.getString("name")), null)).single();
-            };
-        }
-
+    static class TimeoutConfiguration {
         @Bean
         HoldFirstResponse holdFirstResponse() {
             return new HoldFirstResponse();

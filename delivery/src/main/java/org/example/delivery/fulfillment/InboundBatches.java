@@ -89,14 +89,17 @@ class InboundBatches {
                 """).param("batch", batchId).query((row, index) -> new ExpectedLine(row.getString("waybill_no"),
                 row.getString("street"), row.getString("community"))).list();
         var counts = jdbc.sql("""
-                SELECT COUNT(*) AS received_count, COUNT(p.address_area_id) AS assigned_count
+                SELECT COUNT(*) AS received_count, COUNT(p.address_area_id) AS assigned_count,
+                       COUNT(sc.receipt_id) AS sort_credit_count
                 FROM inbound_receipt r JOIN parcel p ON p.id = r.parcel_id
+                LEFT JOIN sort_credit sc ON sc.receipt_id = r.id AND sc.void_event_id IS NULL
                 WHERE r.batch_id = :batch AND r.voided_at IS NULL
                 """).param("batch", batchId)
-                .query((row, index) -> new ReceiptCounts(row.getLong("received_count"), row.getLong("assigned_count")))
+                .query((row, index) -> new ReceiptCounts(row.getLong("received_count"), row.getLong("assigned_count"),
+                        row.getLong("sort_credit_count")))
                 .single();
         return new BatchDetail(Long.toString(batchId), source, lines.size(), counts.received(), counts.assigned(),
-                counts.received() - counts.assigned(), lines);
+                counts.received() - counts.assigned(), counts.sortCredits(), lines);
     }
 
     String requireBatch(long unit, long batchId) {
@@ -194,10 +197,10 @@ class InboundBatches {
     record ManifestLine(JsonNode waybillNo, JsonNode recipientPhone, JsonNode street, JsonNode community, JsonNode address) {}
     private record SourceParcel(String waybillNo, String recipientPhone, String street, String community, String address) {}
     private record StoredManifest(long id, byte[] fingerprint) {}
-    private record ReceiptCounts(long received, long assigned) {}
+    private record ReceiptCounts(long received, long assigned, long sortCredits) {}
     record ExpectedLine(String waybillNo, String street, String community) {}
     record BatchSummary(String id, String sourceBatchNo, long expectedCount, long receivedCount) {}
     record BatchDetail(String id, String sourceBatchNo, long expectedCount, long receivedCount,
-                       long assignedCount, long pendingAreaCount, List<ExpectedLine> expected) {}
+                       long assignedCount, long pendingAreaCount, long sortCreditCount, List<ExpectedLine> expected) {}
     record ImportResult(BatchDetail batch, boolean created) {}
 }

@@ -14,6 +14,7 @@ interface BatchSummary {
 interface BatchDetail extends BatchSummary {
   assignedCount: number
   pendingAreaCount: number
+  sortCreditCount: number
   expected: { waybillNo: string; street: string | null; community: string | null }[]
 }
 
@@ -202,6 +203,7 @@ function retryScan() {
         <p>实收 <strong>{{ detail.receivedCount }}</strong></p>
         <p>已分区 <strong>{{ detail.assignedCount }}</strong></p>
         <p>待分区 <strong>{{ detail.pendingAreaCount }}</strong></p>
+        <p>计件 <strong>{{ detail.sortCreditCount }}</strong></p>
       </div>
       <div v-if="!dispatcher" class="scan-controls">
         <button v-if="!scanning" type="button" :disabled="loading" @click="startScanning">开始扫码</button>
