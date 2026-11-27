@@ -19,6 +19,7 @@ import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 @Service
@@ -52,14 +53,11 @@ class InboundReceipts {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public Operation scan(EmployeePrincipal employee, long batchId, String waybill, String key) {
-        InboundBatches.requireNetworkStaff(employee, false);
-        if (!"NETWORK_OPERATOR".equals(employee.role())) {
-            throw new SecurityException("Only a network operator may confirm an inbound receipt");
-        }
+        requireOperator(employee);
         requireOperationKey(key);
         batches.requireBatch(employee.unitId(), batchId);
         byte[] hash = InboundBatches.hash((batchId + "\n" + waybill).getBytes(StandardCharsets.UTF_8));
-        var operation = reserveOperation(employee.accountId(), key, hash);
+        var operation = reserveOperation(employee.accountId(), COMMAND, key, hash);
         if (operation.result() != null) {
             return json.readValue(operation.result(), Operation.class);
         }
@@ -72,8 +70,7 @@ class InboundReceipts {
         Operation response = active.isPresent()
                 ? new Operation(200, active.get().asDuplicate())
                 : new Operation(201, createReceipt(employee, batchId, parcelId, waybill, operation.id(), now));
-        jdbc.sql("UPDATE operation_receipt SET result = :result, committed_at = :now WHERE id = :id")
-                .param("result", json.writeValueAsString(response)).param("now", now).param("id", operation.id()).update();
+        completeOperation(operation.id(), response, now);
         return response;
     }
 
@@ -101,22 +98,27 @@ class InboundReceipts {
         return operation;
     }
 
-    private StoredOperation reserveOperation(long actor, String key, byte[] hash) {
+    void completeOperation(long id, Object result, LocalDateTime now) {
+        jdbc.sql("UPDATE operation_receipt SET result = :result, committed_at = :now WHERE id = :id")
+                .param("result", json.writeValueAsString(result)).param("now", now).param("id", id).update();
+    }
+
+    StoredOperation reserveOperation(long actor, String command, String key, byte[] hash) {
         jdbc.sql("""
                 INSERT INTO operation_receipt (actor_type, actor_id, command, operation_key, request_hash)
                 VALUES ('EMPLOYEE', :actor, :command, :key, :hash)
                 ON DUPLICATE KEY UPDATE id = operation_receipt.id
-                """).param("actor", actor).param("command", COMMAND).param("key", key).param("hash", hash).update();
+                """).param("actor", actor).param("command", command).param("key", key).param("hash", hash).update();
         var operation = jdbc.sql("""
                 SELECT id, request_hash, result FROM operation_receipt
                 WHERE actor_type = 'EMPLOYEE' AND actor_id = :actor AND command = :command AND operation_key = :key
                 FOR UPDATE
-                """).param("actor", actor).param("command", COMMAND).param("key", key)
+                """).param("actor", actor).param("command", command).param("key", key)
                 .query((row, i) -> new StoredOperation(row.getLong("id"), row.getBytes("request_hash"), row.getString("result")))
                 .single();
         if (!Arrays.equals(hash, operation.hash())) {
             throw new ApiProblems.Failure(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED",
-                    "此扫码操作标识已用于不同的批次或运单。");
+                    "此操作标识已用于不同的请求。");
         }
         return operation;
     }
@@ -152,11 +154,7 @@ class InboundReceipts {
                 .update(receiptKey, "id");
         long receipt = Objects.requireNonNull(receiptKey.getKey()).longValue();
         if (areaId != null) {
-            jdbc.sql("""
-                    INSERT INTO sort_credit (receipt_id, unit_id, employee_id, source_event_id, credited_at)
-                    VALUES (:receipt, :unit, :employee, :event, :now)
-                    """).param("receipt", receipt).param("unit", employee.unitId()).param("employee", employee.accountId())
-                    .param("event", event).param("now", now).update();
+            insertSortCredit(employee, receipt, event, now);
         }
         return new Receipt(areaId == null ? "PENDING_AREA" : "RECEIVED", Long.toString(receipt), Long.toString(batch),
                 waybill, BeijingTime.fromDatabase(now), Long.toString(employee.accountId()),
@@ -165,7 +163,6 @@ class InboundReceipts {
 
     private long insertEvent(EmployeePrincipal employee, long batch, long parcel, long operation, LocalDateTime now,
                              Long area, String pending) {
-        var key = new GeneratedKeyHolder();
         var details = json.createObjectNode();
         details.put("batchId", Long.toString(batch));
         if (area != null) {
@@ -173,14 +170,28 @@ class InboundReceipts {
         } else {
             details.put("pendingAreaReason", pending);
         }
+        return writeEvent(employee, parcel, operation, now, "INBOUND_RECEIVED", details);
+    }
+
+    long writeEvent(EmployeePrincipal employee, long parcel, long operation, LocalDateTime now,
+                    String type, JsonNode details) {
+        var key = new GeneratedKeyHolder();
         jdbc.sql("""
                 INSERT INTO parcel_event (parcel_id, event_type, actor_employee_id, actor_unit_id, operation_receipt_id,
                     occurred_at, details)
-                VALUES (:parcel, 'INBOUND_RECEIVED', :actor, :unit, :operation, :now, :details)
-                """).param("parcel", parcel).param("actor", employee.accountId()).param("unit", employee.unitId())
+                VALUES (:parcel, :type, :actor, :unit, :operation, :now, :details)
+                """).param("parcel", parcel).param("type", type).param("actor", employee.accountId()).param("unit", employee.unitId())
                 .param("operation", operation).param("now", now).param("details", json.writeValueAsString(details))
                 .update(key, "id");
         return Objects.requireNonNull(key.getKey()).longValue();
+    }
+
+    void insertSortCredit(EmployeePrincipal employee, long receipt, long event, LocalDateTime now) {
+        jdbc.sql("""
+                INSERT INTO sort_credit (receipt_id, unit_id, employee_id, source_event_id, credited_at)
+                VALUES (:receipt, :unit, :employee, :event, :now)
+                """).param("receipt", receipt).param("unit", employee.unitId()).param("employee", employee.accountId())
+                .param("event", event).param("now", now).update();
     }
 
     private Match matchAddress(long network, ExpectedAddress address) {
@@ -204,14 +215,21 @@ class InboundReceipts {
                 "此运单不在本网点应到清单，请核对上游明细。");
     }
 
-    private static void requireOperationKey(String key) {
+    static void requireOperator(EmployeePrincipal employee) {
+        InboundBatches.requireNetworkStaff(employee, false);
+        if (!"NETWORK_OPERATOR".equals(employee.role())) {
+            throw new SecurityException("This inbound operation requires a network operator");
+        }
+    }
+
+    static void requireOperationKey(String key) {
         if (key == null || !key.matches("[A-Za-z0-9._~-]{1,64}")) {
-            throw InboundBatches.invalid("请提供有效的扫码操作标识。");
+            throw InboundBatches.invalid("请提供有效的操作标识。");
         }
     }
 
     private record ExpectedAddress(String phone, String street, String community, String address) {}
-    private record StoredOperation(long id, byte[] hash, String result) {}
+    record StoredOperation(long id, byte[] hash, String result) {}
     record Operation(int status, Receipt result) {}
     record ReceiptArea(String id, String name) {}
     record Receipt(String status, String receiptId, String batchId, String waybillNo, OffsetDateTime receivedAt,

@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { ApiError, postJson, requestJson } from './api'
 import { pendingAreaReasons, type PendingAreaReason } from './inboundAreaReasons'
+import AreaAssignmentPanel from './AreaAssignmentPanel.vue'
 import demo from '../../fixtures/mvp.json'
 
 interface BatchSummary {
@@ -181,6 +182,10 @@ function retryScan() {
   if (scanning.value) scanInput.value?.focus()
   void sendQueued()
 }
+
+function refreshAfterAssignment() {
+  return run(loadBatches)
+}
 </script>
 
 <template>
@@ -237,6 +242,13 @@ function retryScan() {
         </ul>
       </details>
     </div>
+    <AreaAssignmentPanel
+      v-if="!dispatcher"
+      v-show="!scanning"
+      :scanning="scanning"
+      @assigned="refreshAfterAssignment"
+      @session-expired="emit('sessionExpired')"
+    />
   </section>
 </template>
 

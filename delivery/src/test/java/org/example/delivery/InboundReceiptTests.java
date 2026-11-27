@@ -67,6 +67,114 @@ class InboundReceiptTests {
         addEmployee("operator-foreign-test", "OTHER-DEMO", "NETWORK_OPERATOR");
         addEmployee("sorter-test", "PICKUP-DEMO-A", "PICKUP_STATION_SORTER");
         addEmployee("operator-rollback-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
+        addEmployee("manual-rollback-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
+    }
+
+    @Test
+    void assignsWestOnceAndUpdatesBatchWithoutChangingTheOriginalReceipt() throws Exception {
+        String batch = importBatch("MANUAL-WEST", List.of(line("00070001", "未知")));
+        try (var scanner = login(port, "operator-xu"); var sorter = login(port, "operator-local-test");
+             var threads = Executors.newFixedThreadPool(2)) {
+            var initial = expect(201, scanner.post(scan(batch), body("00070001"), scanner.csrf(), "manual-scan"));
+            var pending = expect(200, sorter.get("/staff/parcels/pending-area"));
+            String parcelId = parcelId("00070001");
+            assertTrue(pending.findValues("parcelId").stream().anyMatch(v -> parcelId.equals(v.asText())));
+            var before = expect(200, sorter.get(BATCHES + "/" + batch));
+            assertEquals(1, before.path("receivedCount").asInt());
+            assertEquals(0, before.path("assignedCount").asInt());
+            assertEquals(1, before.path("pendingAreaCount").asInt());
+            String west = areaId("JIANGAN-DEMO", "WEST");
+            String path = assignment(parcelId);
+            var csrfA = sorter.csrf();
+            var csrfB = scanner.csrf();
+            var start = new CountDownLatch(1);
+            var left = threads.submit(() -> {
+                start.await();
+                return sorter.post(path, Map.of("areaId", west), csrfA, "manual-a");
+            });
+            var right = threads.submit(() -> {
+                start.await();
+                return scanner.post(path, Map.of("areaId", west), csrfB, "manual-b");
+            });
+            start.countDown();
+            var first = expect(200, left.get(15, TimeUnit.SECONDS));
+            var second = expect(200, right.get(15, TimeUnit.SECONDS));
+            assertEquals(first, second);
+            assertEquals(first, expect(200, sorter.post(path, Map.of("areaId", west), csrfA, "manual-a")));
+            assertEquals("IDEMPOTENCY_KEY_REUSED", expect(409, sorter.post(path, Map.of("areaId",
+                    areaId("JIANGAN-DEMO", "EAST")), csrfA, "manual-a")).path("code").asText());
+            var detail = expect(200, sorter.get(BATCHES + "/" + batch));
+            assertEquals(1, detail.path("receivedCount").asInt());
+            assertEquals(1, detail.path("assignedCount").asInt());
+            assertEquals(0, detail.path("pendingAreaCount").asInt());
+            assertEquals(1, detail.path("sortCreditCount").asInt());
+            var lookup = expect(200, sorter.get(lookup("00070001")));
+            assertEquals("西片区", lookup.path("area").path("name").asText());
+            assertEquals(initial.path("receivedAt"), lookup.path("firstReceivedAt"));
+            assertEquals(batch, lookup.path("receivedBatch").path("id").asText());
+            assertEquals(1, countForBatch("inbound_receipt", batch));
+            assertEquals(1, manualEvents(parcelId));
+            assertEquals(1, countForBatch("sort_credit", batch));
+            assertEquals(first.path("assignedBy").asText(), jdbc.sql("""
+                    SELECT c.employee_id FROM sort_credit c JOIN inbound_receipt r ON r.id = c.receipt_id
+                    WHERE r.parcel_id = :parcel
+                    """).param("parcel", parcelId).query(String.class).single());
+            assertTrue(expect(200, sorter.get("/staff/parcels/pending-area")).findValues("waybillNo").stream()
+                    .noneMatch(v -> "00070001".equals(v.asText())));
+        }
+    }
+
+    @Test
+    void rejectsInvalidAreaAndForeignParcelAndRollsBackWhenCreditFails() throws Exception {
+        String batch = importBatch("MANUAL-ROLLBACK", List.of(line("00070002", "未知")));
+        try (var operator = login(port, "manual-rollback-test"); var foreign = login(port, "operator-foreign-test")) {
+            var csrf = operator.csrf();
+            expect(201, operator.post(scan(batch), body("00070002"), csrf, "manual-rollback-scan"));
+            String parcel = parcelId("00070002");
+            String west = areaId("JIANGAN-DEMO", "WEST");
+            String path = assignment(parcel);
+            expect(404, foreign.post(path, Map.of("areaId", west), foreign.csrf(), "foreign-manual"));
+            assertTrue(expect(200, foreign.get("/staff/parcels/pending-area")).isEmpty());
+            expect(400, operator.post(path, Map.of("areaId", areaId("OTHER-DEMO", "EAST")), csrf, "wrong-area"));
+            jdbc.sql("UPDATE delivery_area SET active = FALSE WHERE id = :id").param("id", west).update();
+            try {
+                expect(400, operator.post(path, Map.of("areaId", west), csrf, "inactive-area"));
+            } finally {
+                jdbc.sql("UPDATE delivery_area SET active = TRUE WHERE id = :id").param("id", west).update();
+            }
+            long actor = Long.parseLong(expect(200, operator.get("/auth/session")).path("employeeId").asText());
+            jdbc.sql("ALTER TABLE sort_credit ADD CONSTRAINT test_fail_manual CHECK (employee_id <> " + actor + ")").update();
+            try {
+                expect(500, operator.post(path, Map.of("areaId", west), csrf, "manual-credit-failure"));
+                assertEquals("PENDING_AREA", expect(200, operator.get(lookup("00070002"))).path("status").asText());
+                assertEquals(0, manualEvents(parcel));
+                assertEquals(0, countForBatch("sort_credit", batch));
+            } finally {
+                jdbc.sql("ALTER TABLE sort_credit DROP CHECK test_fail_manual").update();
+            }
+            expect(200, operator.post(path, Map.of("areaId", west), csrf, "manual-credit-failure"));
+        }
+    }
+
+    private String parcelId(String waybillNo) {
+        return jdbc.sql("SELECT id FROM parcel WHERE waybill_no = :waybill")
+                .param("waybill", waybillNo).query(String.class).single();
+    }
+
+    private String areaId(String networkCode, String areaCode) {
+        return jdbc.sql("""
+                SELECT a.id FROM delivery_area a JOIN org_unit u ON u.id = a.network_id
+                WHERE u.code = :network AND a.code = :code
+                """).param("network", networkCode).param("code", areaCode).query(String.class).single();
+    }
+
+    private int manualEvents(String parcel) {
+        return jdbc.sql("SELECT COUNT(*) FROM parcel_event WHERE parcel_id = :parcel AND event_type = 'MANUAL_AREA_ASSIGNED'")
+                .param("parcel", parcel).query(Integer.class).single();
+    }
+
+    private static String assignment(String parcel) {
+        return "/staff/parcels/" + parcel + "/area-assignments";
     }
 
     @Test

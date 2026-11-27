@@ -38,7 +38,8 @@
 | 网点与运力 | `GET /staff/areas`、`GET /staff/shifts`、`GET /staff/workers` | 读取片区、责任人和指定班次的在岗人员。管理工作台按所属单位新增或更新具体资源。 |
 | 入站 | `POST /staff/inbound-batches`、`GET /staff/inbound-batches/{batchId}` | 导入可信演示清单。详情分列应到、有效实收、异常及核对后未收。 |
 | 入站 | `POST /staff/inbound-batches/{batchId}/receipts`、`GET /staff/inbound-receipts/{receiptId}` | 提交 `waybillNo`。返回 `RECEIVED`、`PENDING_AREA` 或 `ALREADY_RECEIVED`、片区与实收时间，能在同一页继续扫码。详情可核对该次实收及作废状态。 |
-| 入站 | `POST /staff/parcels/{parcelId}/area-assignments`、`POST /staff/inbound-receipts/{receiptId}/voids`、`GET /staff/me/sort-credits` | 补分提交片区；更正或作废提交理由和版本。本人计件按业务日期查询。 |
+| 入站 | `GET /staff/parcels/pending-area`、`POST /staff/parcels/{parcelId}/area-assignments` | 操作员读取本站仍在站且待分区的实收件。补分提交 `areaId` 和 `Idempotency-Key`，首次补分同事务记录分区和计件。 |
+| 入站 | `POST /staff/inbound-receipts/{receiptId}/voids`、`GET /staff/me/sort-credits` | 更正或作废提交理由和版本。本人计件按业务日期查询。 |
 | 内部查件 | `GET /staff/parcels?waybillNo=…`、`GET /staff/parcels/{parcelId}` | 在授权单位内按完整运单号查件。明细展示状态、当前保管和有权看到的履约时间线。 |
 | 计划 | `POST /staff/delivery-plans`、`GET /staff/delivery-plans/{planId}`、`PATCH /staff/delivery-plans/{planId}` | 选批次和班次生成草案，查询分组或显式调整受影响条目。草案保存拟领件人及版本。 |
 | 计划 | `POST /staff/delivery-plans/{planId}/releases`、`POST /staff/delivery-plans/{planId}/revocations` | 提交明确选中的运单、草案和包裹版本。发布或撤销返回当前授权结果，已领件转实际交接流程。 |
