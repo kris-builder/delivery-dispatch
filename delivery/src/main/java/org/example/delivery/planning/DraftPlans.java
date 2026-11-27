@@ -1,5 +1,6 @@
 package org.example.delivery.planning;
 
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,20 +58,25 @@ class DraftPlans {
         return store.detail(employee.unitId(), id);
     }
 
+    Page<StationQueries.Shift> eligibleShifts(EmployeePrincipal employee, Instant at, int page, int pageSize) {
+        requireDispatcher(employee);
+        if (page < 1 || pageSize < 1 || pageSize > 100) {
+            throw new ApiProblems.Failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "页码至少为 1，每页条数须在 1 到 100 之间。");
+        }
+        return station.shiftsAt(new StaffContext(employee.unitId(), employee.role()), at, page, pageSize);
+    }
+
     private Prepared prepare(EmployeePrincipal employee, long batchId, long shiftId, OffsetDateTime at) {
         var parcels = receipts.confirmedHomeReceipts(employee, batchId);
         var scope = new StaffContext(employee.unitId(), employee.role());
         var instant = at.toInstant();
-        var members = readAll(page -> station.shiftMembersAt(scope, instant, page, 100)).stream()
-                .filter(member -> member.shiftId().equals(Long.toString(shiftId))).toList();
-        if (members.isEmpty()) {
-            throw new ApiProblems.Failure(HttpStatus.NOT_FOUND, "PLANNING_SHIFT_NOT_FOUND",
-                    "在该北京时间查不到本网点所选班次。");
-        }
-        var shift = new DraftGenerator.Shift(members.getFirst().startsAt().toInstant(),
-                members.getFirst().endsAt().toInstant(), members.stream().map(member ->
-                        new DraftGenerator.ShiftMember(member.workerId(), DraftGenerator.DutyStatus.valueOf(member.status())))
-                        .toList());
+        var selectedShift = station.shiftAt(scope, shiftId, instant)
+                .orElseThrow(() -> new ApiProblems.Failure(HttpStatus.NOT_FOUND, "PLANNING_SHIFT_NOT_FOUND",
+                        "在该北京时间查不到本网点所选班次。"));
+        var available = readAll(page -> station.onDutyWorkersForShift(scope, shiftId, instant, page, 100));
+        var shift = new DraftGenerator.Shift(selectedShift.startsAt().toInstant(),
+                selectedShift.endsAt().toInstant(), available.stream().map(worker ->
+                        new DraftGenerator.ShiftMember(worker.id(), DraftGenerator.DutyStatus.ON_DUTY)).toList());
         var areas = readAll(page -> station.areas(scope, page, 100)).stream().collect(Collectors.toMap(
                 StationQueries.Area::id, area -> new DraftGenerator.Area(area.id(), area.name(),
                         area.regularWorker() == null ? null : new DraftGenerator.Worker(

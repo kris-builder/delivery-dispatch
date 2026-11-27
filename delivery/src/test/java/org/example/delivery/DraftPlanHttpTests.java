@@ -103,6 +103,42 @@ class DraftPlanHttpTests {
     }
 
     @Test
+    void savesAndReopensValidLocalShiftWithNoMembers() throws Exception {
+        jdbc.sql("""
+                INSERT INTO duty_shift (unit_id, service_date, code, starts_at, ends_at)
+                SELECT unit_id, service_date, 'EMPTY', starts_at, ends_at FROM duty_shift WHERE id = :id
+                """).param("id", shiftId).update();
+        String emptyShiftId = jdbc.sql("""
+                SELECT id FROM duty_shift WHERE code = 'EMPTY'
+                """).query(String.class).single();
+        try (var dispatcher = login(port, "dispatcher-zhou")) {
+            var before = fulfillment();
+            var input = Map.of("batchId", batchId, "shiftId", emptyShiftId, "at", AT);
+            var plan = expect(201, dispatcher.post(PLANS, input, dispatcher.csrf()));
+            var id = plan.path("id").asText();
+            assertEquals(plan, expect(200, dispatcher.get(PLANS + "/" + id)));
+            assertEquals(emptyShiftId, plan.path("shiftId").asText());
+            assertEquals("0", plan.path("version").asText());
+            assertEquals(2, plan.path("total").asInt());
+            assertEquals(0, plan.path("assigned").asInt());
+            assertEquals(2, plan.path("pending").asInt());
+            var item = plan.path("groups").get(0).path("items").get(0);
+            assertEquals("000726030001", item.path("waybillNo").asText());
+            assertTrue(item.path("proposedWorkerId").isNull());
+            assertEquals("REGULAR_WORKER_UNAVAILABLE", item.path("pendingReason").asText());
+            assertEquals(2, jdbc.sql("SELECT COUNT(*) FROM plan_item WHERE plan_id = :id AND proposed_worker_id IS NULL")
+                    .param("id", id).query(Integer.class).single());
+            assertEquals(0, jdbc.sql("SELECT version FROM delivery_plan WHERE id = :id")
+                    .param("id", id).query(Integer.class).single());
+            assertEquals(before, fulfillment());
+
+            var choices = expect(200, dispatcher.get(PLANS + "/eligible-shifts?at=2026-11-25T08:00:00%2B08:00"))
+                    .path("items").findValues("shiftId").stream().map(value -> value.asText()).toList();
+            assertEquals(List.of(shiftId, emptyShiftId), choices);
+        }
+    }
+
+    @Test
     void rejectsWrongRoleCsrfForeignResourcesAndShiftEndWithoutSaving() throws Exception {
         try (var dispatcher = login(port, "dispatcher-zhou"); var foreign = login(port, "dispatcher-other");
              var operator = login(port, "operator-xu"); var station = login(port, "station-leader-a")) {
@@ -112,8 +148,9 @@ class DraftPlanHttpTests {
             expect(403, operator.post(PLANS, input(), operator.csrf()));
             expect(403, station.post(PLANS, input(), station.csrf()));
             expect(404, foreign.post(PLANS, input(), foreign.csrf()));
-            expect(404, dispatcher.post(PLANS, Map.of("batchId", batchId, "shiftId", foreignShiftId, "at", AT),
+            var wrongSite = expect(404, dispatcher.post(PLANS, Map.of("batchId", batchId, "shiftId", foreignShiftId, "at", AT),
                     dispatcher.csrf()));
+            assertEquals("PLANNING_SHIFT_NOT_FOUND", wrongSite.path("code").asText());
             expect(404, dispatcher.post(PLANS, Map.of("batchId", batchId, "shiftId", shiftId,
                     "at", "2026-11-25T12:00:00+08:00"), dispatcher.csrf()));
             assertEquals(plansBefore, planCount());

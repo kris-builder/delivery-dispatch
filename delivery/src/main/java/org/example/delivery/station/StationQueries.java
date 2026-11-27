@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.example.delivery.time.BeijingTime;
 
@@ -50,6 +51,15 @@ public class StationQueries {
             WHERE s.unit_id = :unitId AND w.kind = 'NETWORK_COURIER' AND w.active = TRUE
               AND s.starts_at <= :at AND :at < s.ends_at
             """;
+    private static final String SHIFT_COLUMNS = "SELECT s.id, s.code, s.starts_at, s.ends_at ";
+    private static final String SHIFT_FILTER = """
+            FROM duty_shift s
+            WHERE s.unit_id = :unitId AND s.starts_at <= :at AND :at < s.ends_at
+            """;
+    private static final RowMapper<Shift> SHIFT_ROW = (row, rowNumber) -> new Shift(
+            row.getString("id"), row.getString("code"),
+            BeijingTime.fromDatabase(row.getObject("starts_at", LocalDateTime.class)),
+            BeijingTime.fromDatabase(row.getObject("ends_at", LocalDateTime.class)));
 
     private final JdbcClient jdbc;
 
@@ -100,6 +110,19 @@ public class StationQueries {
                         row.getString("duty_status"), row.getString("version")));
     }
 
+    public Page<Shift> shiftsAt(StaffContext staff, Instant at, int page, int pageSize) {
+        StationAccess.requireNetworkStaff(jdbc, staff, true);
+        return queryPage(SHIFT_COLUMNS, SHIFT_FILTER,
+                Map.of("unitId", staff.unitId(), "at", BeijingTime.forDatabase(at)), page, pageSize, SHIFT_ROW);
+    }
+
+    public Optional<Shift> shiftAt(StaffContext staff, long shiftId, Instant at) {
+        StationAccess.requireNetworkStaff(jdbc, staff, true);
+        return jdbc.sql(SHIFT_COLUMNS + SHIFT_FILTER + " AND s.id = :shiftId")
+                .param("unitId", staff.unitId()).param("at", BeijingTime.forDatabase(at)).param("shiftId", shiftId)
+                .query(SHIFT_ROW).optional();
+    }
+
     private Page<Worker> queryOnDutyWorkers(StaffContext staff, long shiftId, Instant at, int page, int pageSize) {
         StationAccess.requireNetworkStaff(jdbc, staff, true);
         return queryPage("SELECT w.id, w.display_name ", ON_DUTY_FILTER,
@@ -132,6 +155,8 @@ public class StationQueries {
     public record Area(String id, String code, String name, boolean active, Worker regularWorker) {}
 
     public record Worker(String id, String displayName) {}
+
+    public record Shift(String shiftId, String code, OffsetDateTime startsAt, OffsetDateTime endsAt) {}
 
     public record ShiftMember(String shiftId, String workerId, String displayName, String code,
                               OffsetDateTime startsAt, OffsetDateTime endsAt, String status, String version) {}

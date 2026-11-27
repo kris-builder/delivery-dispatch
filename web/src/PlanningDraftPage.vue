@@ -55,19 +55,17 @@ async function queryShifts() {
   queriedAt.value = ''
   const timestamp = time.fromInput(at.value)
   if (!timestamp) throw new Error('请输入有效的北京时间。')
-  const found = new Map<string, Shift>()
+  const found: Shift[] = []
   let page = 1
-  let read = 0
   for (;;) {
     const result = await requestJson<{ items: Shift[]; total: number }>(
-      `/staff/shifts?${new URLSearchParams({ at: timestamp, page: String(page), pageSize: '100' })}`,
+      `/staff/delivery-plans/eligible-shifts?${new URLSearchParams({ at: timestamp, page: String(page), pageSize: '100' })}`,
     )
-    result.items.forEach(shift => found.set(shift.shiftId, shift))
-    read += result.items.length
-    if (read >= result.total || result.items.length === 0) break
+    found.push(...result.items)
+    if (found.length >= result.total || result.items.length === 0) break
     page++
   }
-  shifts.value = [...found.values()]
+  shifts.value = found
   shiftId.value = shifts.value[0]?.shiftId ?? ''
   queriedAt.value = timestamp
 }
