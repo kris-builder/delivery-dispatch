@@ -26,6 +26,7 @@ const result = ref<Waybill | null>(null)
 const loading = ref(false)
 const error = ref('')
 const statuses = { EXPECTED: '仅应到', PENDING_AREA: '已实收待补分', RECEIVED: '已实收已分区' }
+const eventNames: Record<string, string> = { INBOUND_RECEIVED: '入站实收', MANUAL_AREA_ASSIGNED: '人工补分' }
 const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   dateStyle: 'medium', timeStyle: 'medium', timeZone: BEIJING_ZONE,
 })
@@ -90,7 +91,7 @@ function formatTime(value: string) {
         <ul>
           <li v-for="(event, index) in result.events" :key="index">
             <time :datetime="event.occurredAt">{{ formatTime(event.occurredAt) }}</time>
-            {{ event.type === 'INBOUND_RECEIVED' ? '入站实收' : event.type }}
+            {{ eventNames[event.type] ?? event.type }}
           </li>
         </ul>
       </details>

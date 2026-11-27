@@ -22,11 +22,13 @@ class InboundController {
     private final InboundBatches batches;
     private final InboundReceipts receipts;
     private final WaybillLookup waybills;
+    private final AreaAssignments assignments;
 
-    InboundController(InboundBatches batches, InboundReceipts receipts, WaybillLookup waybills) {
+    InboundController(InboundBatches batches, InboundReceipts receipts, WaybillLookup waybills, AreaAssignments assignments) {
         this.batches = batches;
         this.receipts = receipts;
         this.waybills = waybills;
+        this.assignments = assignments;
     }
 
     @PostMapping("/staff/inbound-batches")
@@ -76,5 +78,18 @@ class InboundController {
         return waybills.find(employee, InboundBatches.requiredText(waybillNo, 64, "运单号"));
     }
 
+    @GetMapping("/staff/parcels/pending-area")
+    List<AreaAssignments.PendingParcel> pendingArea(@AuthenticationPrincipal EmployeePrincipal employee) {
+        return assignments.pending(employee);
+    }
+
+    @PostMapping("/staff/parcels/{parcelId}/area-assignments")
+    AreaAssignments.Assignment assignArea(@AuthenticationPrincipal EmployeePrincipal employee,
+                                          @PathVariable long parcelId, @RequestBody AssignmentInput input,
+                                          @RequestHeader("Idempotency-Key") String key) {
+        return assignments.assign(employee, parcelId, input.areaId(), key);
+    }
+
+    record AssignmentInput(long areaId) {}
     record ScanInput(JsonNode waybillNo) {}
 }
