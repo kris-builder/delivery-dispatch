@@ -128,8 +128,8 @@ erDiagram
 
 | 表 · 写入模块 | 字段 | 关系和约束 |
 | --- | --- | --- |
-| `delivery_plan` · planning | `id`, `network_id`, `shift_id`, `inbound_batch_id`, `created_by`, `created_at`, `status 代码`, `version` | 关联同一网点的入站批次、班次和操作人。`IX(network_id, shift_id, status)`。 |
-| `plan_item` · planning | `plan_id`, `parcel_id`, `target_area_id?`, `proposed_worker_id?`, `parcel_version BIGINT`, `reason_code? 代码` | `PK(plan_id, parcel_id)`。保存拟领件人、留站或未安排理由。草案只引用当时包裹版本。 |
+| `delivery_plan` · planning | `id`, `network_id`, `shift_id`, `inbound_batch_id`, `created_by`, `created_at`, `evaluated_at`, `status 代码`, `version` | 关联同一网点的入站批次、班次和操作人。`evaluated_at` 保存生成时的班次查询时点。`IX(network_id, shift_id, status)`。 |
+| `plan_item` · planning | `plan_id`, `parcel_id`, `target_area_id?`, `target_area_name?`, `proposed_worker_id?`, `proposed_worker_name?`, `parcel_version BIGINT`, `reason_code? 代码` | `PK(plan_id, parcel_id)`。保存草案当时的片区和拟领件人名称、留站或未安排理由，以及引用的包裹版本。 |
 | `plan_adjustment` · planning | `id`, `plan_id`, `parcel_id`, `plan_version BIGINT`, `old_worker_id?`, `new_worker_id?`, `reason 说明`, `changed_by`, `changed_at` | 调整和草案更新同事务。逐票保存临时改人或留站原因，便于对照发布版本。 |
 | `plan_release` · planning | `id`, `plan_id`, `release_no INT`, `plan_version BIGINT`, `published_by`, `published_at` | `UQ(plan_id, release_no)`。每次明确确认的发布或直接改派在此建一批。 |
 | `plan_release_item` · planning | `release_id`, `parcel_id`, `worker_id`, `authorized_event_id` | `PK(release_id, parcel_id)`。绑定提交成功的逐票授权事件，能查历史有效范围。 |
