@@ -21,6 +21,15 @@ public class HomeStagingCandidates {
     }
 
     public List<Candidate> find(EmployeePrincipal employee, long batchId) {
+        return find(employee, batchId, false);
+    }
+
+    /** Confirmed home deliveries awaiting area assignment appear as unassigned in the draft. */
+    public List<Candidate> findPendingArea(EmployeePrincipal employee, long batchId) {
+        return find(employee, batchId, true);
+    }
+
+    private List<Candidate> find(EmployeePrincipal employee, long batchId, boolean pendingArea) {
         InboundBatches.requireNetworkStaff(employee, false);
         long unitId = employee.unitId();
         batches.requireBatch(unitId, batchId);
@@ -30,22 +39,26 @@ public class HomeStagingCandidates {
                        a.id AS agreement_id, a.version AS agreement_version, a.method, a.confirmed_at
                 FROM inbound_receipt r
                 JOIN parcel p ON p.id = r.parcel_id
-                JOIN delivery_area area ON area.id = p.address_area_id AND area.network_id = :unit AND area.active
+                LEFT JOIN delivery_area area ON area.id = p.address_area_id AND area.network_id = :unit AND area.active
                 JOIN delivery_agreement a ON a.active_parcel_id = p.id AND a.method = 'HOME'
                 WHERE r.batch_id = :batch AND r.voided_at IS NULL AND p.network_id = :unit
                     AND p.holder_kind = 'NETWORK' AND p.holder_unit_id = :unit AND p.stage = 'IN_STATION'
-                    AND p.pending_area_reason IS NULL
+                    AND ((:pendingArea = FALSE AND p.pending_area_reason IS NULL AND area.id IS NOT NULL)
+                      OR (:pendingArea = TRUE AND p.pending_area_reason IS NOT NULL AND p.address_area_id IS NULL))
                     AND NOT EXISTS (
                         SELECT 1 FROM inbound_quarantine q WHERE q.active_parcel_id = p.id
                     )
                 ORDER BY p.id
-                """).param("batch", batchId).param("unit", unitId)
-                .query((row, index) -> new Candidate(row.getLong("id"), row.getString("waybill_no"),
-                        row.getLong("version"), new Area(row.getString("area_id"), row.getString("area_name")),
-                        new Agreement(row.getString("agreement_id"), row.getString("agreement_version"),
-                                row.getString("method"),
-                                BeijingTime.fromDatabase(row.getObject("confirmed_at", LocalDateTime.class)))))
-                .list();
+                """).param("batch", batchId).param("unit", unitId).param("pendingArea", pendingArea)
+                .query((row, index) -> {
+                    String areaId = row.getString("area_id");
+                    var area = areaId == null ? null : new Area(areaId, row.getString("area_name"));
+                    var agreement = new Agreement(row.getString("agreement_id"), row.getString("agreement_version"),
+                            row.getString("method"),
+                            BeijingTime.fromDatabase(row.getObject("confirmed_at", LocalDateTime.class)));
+                    return new Candidate(row.getLong("id"), row.getString("waybill_no"), row.getLong("version"),
+                            area, agreement);
+                }).list();
     }
 
     public record Candidate(@JsonFormat(shape = JsonFormat.Shape.STRING) long parcelId, String waybillNo,

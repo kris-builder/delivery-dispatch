@@ -43,7 +43,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Import({TestcontainersConfiguration.class, InboundReceiptTests.TimeoutConfiguration.class})
-@ActiveProfiles({"identity-demo", "planning-demo"})
+@ActiveProfiles("identity-demo")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = "delivery.demo.temporary-password=Demo-Temporary-001")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -182,12 +182,15 @@ class InboundReceiptTests {
 
     @Test
     void registersDamageAndMissingLabelWithoutLeakingIntoPlanningOrCredits() throws Exception {
-        String batch = importBatch("PLANNING-03-DEMO",
+        String batch = importBatch("PLANNING-QUARANTINE",
                 List.of(line("000726030001", "东"), line("000726030002", "东")));
         String path = quarantine(batch);
         try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou");
              var other = login(port, "operator-local-test"); var threads = Executors.newFixedThreadPool(2)) {
             var csrf = operator.csrf();
+            String east = areaId("JIANGAN-DEMO", "EAST");
+            insertHomeAgreement("000726030001", east);
+            insertHomeAgreement("000726030002", east);
             expect(201, operator.post(scan(batch), body("000726030001"), csrf, "quarantine-normal"));
             var damage = Map.of("kind", "DAMAGED", "waybillNo", "000726030002", "note", "外箱破损",
                     "evidenceRef", "到货照片 A");

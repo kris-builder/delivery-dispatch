@@ -24,6 +24,7 @@ import org.springframework.test.context.ActiveProfiles;
 import tools.jackson.databind.JsonNode;
 
 import static org.example.delivery.AuthHttpClient.expect;
+import static org.example.delivery.DraftPlanHttpTests.confirmHome;
 import static org.example.delivery.InboundBatchTests.activate;
 import static org.example.delivery.InboundBatchTests.login;
 import static org.example.delivery.InboundBatchTests.manifest;
@@ -31,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Import(TestcontainersConfiguration.class)
-@ActiveProfiles({"identity-demo", "planning-demo"})
+@ActiveProfiles("identity-demo")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"delivery.demo.temporary-password=Demo-Temporary-001", "spring.flyway.target=10"})
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -45,6 +46,7 @@ class DraftAdjustmentHttpTests {
     @Autowired JdbcClient jdbc;
     @Autowired DataSource dataSource;
     private String batchId;
+    private String legacyBatchId;
     private String shiftId;
     private String chen;
     private String support;
@@ -61,15 +63,12 @@ class DraftAdjustmentHttpTests {
             east = expect(200, dispatcher.get("/staff/areas")).path("items").get(0).path("id").asText();
             expect(201, dispatcher.post("/staff/area-rules", Map.of(
                     "street", "演示东路", "community", "草案样例小区", "areaId", east), dispatcher.csrf()));
-            var manifest = manifest("PLANNING-03-DEMO", List.of("000726030001", "000726030002", "000726030003")
-                    .stream().map(waybill -> Map.of("waybillNo", waybill, "street", "演示东路",
-                            "community", "草案样例小区")).toList());
-            batchId = expect(201, dispatcher.post(BATCHES, manifest, dispatcher.csrf())).path("id").asText();
+            legacyBatchId = importLegacyManifest();
             for (String waybill : List.of("000726030001", "000726030002", "000726030003")) {
-                expect(201, operator.post(BATCHES + "/" + batchId + "/receipts",
+                expect(201, operator.post(BATCHES + "/" + legacyBatchId + "/receipts",
                         Map.of("waybillNo", waybill), operator.csrf(), "support-" + waybill));
             }
-            migratedQuarantine = expect(200, operator.post(BATCHES + "/" + batchId + "/quarantines",
+            migratedQuarantine = expect(200, operator.post(BATCHES + "/" + legacyBatchId + "/quarantines",
                     Map.of("kind", "UNLISTED", "waybillNo", "000726039999", "physicalConfirmed", true),
                     operator.csrf(), "support-legacy-unlisted"));
             shiftId = expect(200, dispatcher.get("/staff/shifts?at=2026-11-25T08:00:00%2B08:00"))
@@ -82,7 +81,7 @@ class DraftAdjustmentHttpTests {
                 INSERT INTO delivery_plan (network_id, shift_id, inbound_batch_id, created_by, created_at, evaluated_at)
                 SELECT e.unit_id, :shift, :batch, e.id, '2026-11-25 08:10:00', '2026-11-25 08:00:00'
                 FROM employee_account e WHERE e.login_name = 'dispatcher-zhou'
-                """).param("shift", shiftId).param("batch", batchId).update();
+                """).param("shift", shiftId).param("batch", legacyBatchId).update();
         migratedId = jdbc.sql("SELECT id FROM delivery_plan").query(String.class).single();
         jdbc.sql("""
                 INSERT INTO plan_item (plan_id, parcel_id, target_area_id, target_area_name,
@@ -93,18 +92,59 @@ class DraftAdjustmentHttpTests {
         var flyway = Flyway.configure().dataSource(dataSource).load();
         assertEquals("10", flyway.info().current().getVersion().getVersion());
         flyway.migrate();
+        try (var dispatcher = login(port, "dispatcher-zhou"); var operator = login(port, "operator-xu")) {
+            var waybills = List.of("000007004001", "000007004002", "000007004003");
+            var currentManifest = manifest("PLANNING-ADJUSTMENT", waybills.stream()
+                    .map(waybill -> Map.of("waybillNo", waybill, "street", "演示东路", "community", "草案样例小区"))
+                    .toList());
+            batchId = expect(201, dispatcher.post(BATCHES, currentManifest, dispatcher.csrf())).path("id").asText();
+            for (String waybill : waybills) {
+                expect(201, operator.post(BATCHES + "/" + batchId + "/receipts",
+                        Map.of("waybillNo", waybill), operator.csrf(), "current-support-" + waybill));
+                confirmHome(jdbc, waybill);
+            }
+        }
+    }
+
+    private String importLegacyManifest() {
+        // The current manifest endpoint reads V12 review details, which do not exist at V10.
+        jdbc.sql("""
+                INSERT INTO inbound_batch
+                    (network_id, source_system, source_batch_no, source_fingerprint, imported_by, imported_at)
+                SELECT unit_id, 'SYNTHETIC', 'PLANNING-V10', UNHEX(SHA2('planning-v10', 256)), id, '2026-11-25 07:00:00'
+                FROM employee_account WHERE login_name = 'dispatcher-zhou'
+                """).update();
+        String batch = jdbc.sql("SELECT id FROM inbound_batch WHERE source_batch_no = 'PLANNING-V10'")
+                .query(String.class).single();
+        for (String waybill : List.of("000726030001", "000726030002", "000726030003")) {
+            jdbc.sql("""
+                    INSERT INTO parcel (network_id, waybill_no, street, community, created_at, updated_at)
+                    SELECT network_id, :waybill, '演示东路', '草案样例小区', imported_at, imported_at
+                    FROM inbound_batch WHERE id = :batch
+                    """).param("waybill", waybill).param("batch", batch).update();
+        }
+        jdbc.sql("""
+                INSERT INTO inbound_expected (batch_id, parcel_id, street, community, imported_at)
+                SELECT b.id, p.id, p.street, p.community, b.imported_at
+                FROM inbound_batch b JOIN parcel p ON p.network_id = b.network_id
+                WHERE b.id = :batch AND p.waybill_no IN ('000726030001', '000726030002', '000726030003')
+                """).param("batch", batch).update();
+        return batch;
     }
 
     @Test
     void preservesQuarantineAndAdjustsDraftMigratedFromV10() throws Exception {
         try (var dispatcher = login(port, "dispatcher-zhou")) {
-            var batch = expect(200, dispatcher.get(BATCHES + "/" + batchId));
+            var batch = expect(200, dispatcher.get(BATCHES + "/" + legacyBatchId));
             assertEquals(3, batch.path("receivedCount").asInt());
             assertEquals(3, batch.path("sortCreditCount").asInt());
             assertEquals(1, batch.path("quarantines").size());
             assertEquals(migratedQuarantine, batch.path("quarantines").get(0));
             var old = expect(200, dispatcher.get(PLANS + "/" + migratedId));
             assertEquals("0", old.path("version").asText());
+            assertEquals("000726030001", line(old, 0).path("waybillNo").asText());
+            assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM delivery_agreement WHERE parcel_id = :parcel")
+                    .param("parcel", line(old, 0).path("parcelId").asText()).query(Integer.class).single());
             var changed = expect(200, dispatcher.patch(PLANS + "/" + migratedId,
                     adjustment("0", List.of(line(old, 0).path("parcelId").asText()), support), dispatcher.csrf()));
             assertEquals("1", changed.path("version").asText());
