@@ -4,6 +4,7 @@ import { ApiError, postJson, requestJson } from './api'
 import StationQueryPanel from './StationQueryPanel.vue'
 import InboundBatchPanel from './InboundBatchPanel.vue'
 import WaybillLookupPanel from './WaybillLookupPanel.vue'
+import AreaRulePanel from './AreaRulePanel.vue'
 
 interface EmployeeSession {
   type: 'EMPLOYEE'
@@ -137,6 +138,11 @@ async function logout() {
       :key="employee.employeeId"
       :dispatcher="employee.role === 'NETWORK_DISPATCHER'"
       :time-zone="employee.timeZone"
+      @session-expired="sessionExpired"
+    />
+    <AreaRulePanel
+      v-if="employee?.role === 'NETWORK_DISPATCHER' && !employee.mustChangePassword"
+      :key="employee.employeeId"
       @session-expired="sessionExpired"
     />
     <InboundBatchPanel

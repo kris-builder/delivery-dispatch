@@ -33,17 +33,27 @@ export async function requestJson<T>(path: string, options: RequestInit = {}): P
   return body as T
 }
 
+type WriteOptions = { operationKey?: string; signal?: AbortSignal }
+
 export async function postJson<T>(
   path: string,
   data?: unknown,
-  options: { operationKey?: string; signal?: AbortSignal } = {},
+  options: WriteOptions = {},
 ): Promise<T> {
+  return writeJson<T>('POST', path, data, options)
+}
+
+export async function patchJson<T>(path: string, data: Record<string, string | boolean>): Promise<T> {
+  return writeJson<T>('PATCH', path, data, {})
+}
+
+async function writeJson<T>(method: 'POST' | 'PATCH', path: string, data: unknown, options: WriteOptions): Promise<T> {
   const csrf = await requestJson<{ headerName: string; token: string }>('/auth/csrf', { signal: options.signal })
   const headers = new Headers({ [csrf.headerName]: csrf.token })
   if (data) headers.set('Content-Type', 'application/json')
   if (options.operationKey) headers.set('Idempotency-Key', options.operationKey)
   return requestJson<T>(path, {
-    method: 'POST',
+    method,
     headers,
     body: data ? JSON.stringify(data) : undefined,
     signal: options.signal,

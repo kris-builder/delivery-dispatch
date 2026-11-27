@@ -46,7 +46,7 @@ Set-Location delivery
 .\mvnw.cmd '-Dspring-boot.run.profiles=local,identity-demo' spring-boot:run
 ```
 
-另开终端，在 `web/` 运行 `npm ci` 和 `npm run dev -- --port 5176`。打开 `http://127.0.0.1:5176`，用 `dispatcher-zhou` 和所设的临时密码登录，按页面要求修改密码。页面默认查北京时间 2026 年 11 月 25 日 08:00，预期在岗为陈立、刘洋。把 UTC 查询时间改为同日 `04:00`，点「查当班」，预期为 0 人。
+另开终端，在 `web/` 运行 `npm ci` 和 `npm run dev -- --port 5176`。打开 `http://127.0.0.1:5176`，用 `dispatcher-zhou` 和所设的临时密码登录，按页面要求修改密码。页面默认查北京时间 2026 年 11 月 25 日 08:00，预期在岗为陈立、刘洋。把查询时间改为同日北京时间 `12:00`，点「查当班」，预期为 0 人。
 
 退出后用 `operator-xu` 登录，完成首次改密。页面应能看到江岸的东、西片区。在浏览器同一会话打开 `http://127.0.0.1:5176/api/v1/staff/workers?at=2026-11-25T00:00:00Z`，预期 HTTP `403`，错误码为 `FORBIDDEN`，响应没有在岗名单。同一地址在 `dispatcher-zhou` 会话中返回 HTTP `200` 和两人名单。对照网点的调度账号 `dispatcher-other` 查同一时间只返回王平。甲、乙驿站站长分别用 `station-leader-a`、`station-leader-b` 登录。
 
