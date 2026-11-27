@@ -3,6 +3,7 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly requestId: string | null,
+    readonly code: string | null = null,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -26,27 +27,35 @@ export async function requestJson<T>(path: string, options: RequestInit = {}): P
   if (!response.ok || !isJson) {
     const detail = typeof body?.detail === 'string' ? body.detail : `接口返回 HTTP ${response.status}`
     const requestId = response.headers.get('X-Request-Id')
-    throw new ApiError(detail, response.status, requestId)
+    throw new ApiError(detail, response.status, requestId, typeof body?.code === 'string' ? body.code : null)
   }
 
   return body as T
 }
 
-export async function postJson<T>(path: string, data?: Record<string, string>): Promise<T> {
-  return writeJson<T>('POST', path, data)
+type WriteOptions = { operationKey?: string; signal?: AbortSignal }
+
+export async function postJson<T>(
+  path: string,
+  data?: unknown,
+  options: WriteOptions = {},
+): Promise<T> {
+  return writeJson<T>('POST', path, data, options)
 }
 
 export async function patchJson<T>(path: string, data: Record<string, string | boolean>): Promise<T> {
-  return writeJson<T>('PATCH', path, data)
+  return writeJson<T>('PATCH', path, data, {})
 }
 
-async function writeJson<T>(method: 'POST' | 'PATCH', path: string, data?: Record<string, string | boolean>): Promise<T> {
-  const csrf = await requestJson<{ headerName: string; token: string }>('/auth/csrf')
+async function writeJson<T>(method: 'POST' | 'PATCH', path: string, data: unknown, options: WriteOptions): Promise<T> {
+  const csrf = await requestJson<{ headerName: string; token: string }>('/auth/csrf', { signal: options.signal })
   const headers = new Headers({ [csrf.headerName]: csrf.token })
   if (data) headers.set('Content-Type', 'application/json')
+  if (options.operationKey) headers.set('Idempotency-Key', options.operationKey)
   return requestJson<T>(path, {
     method,
     headers,
     body: data ? JSON.stringify(data) : undefined,
+    signal: options.signal,
   })
 }

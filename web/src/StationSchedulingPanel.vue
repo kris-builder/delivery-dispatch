@@ -16,9 +16,9 @@ interface Member {
   version: string
 }
 
-const props = defineProps<{ at: string; timeZone: string }>()
+const props = defineProps<{ at: string }>()
 const emit = defineEmits<{ updated: []; sessionExpired: [] }>()
-const stationTime = createStationTime(props.timeZone)
+const stationTime = createStationTime()
 const lifetime = new AbortController()
 let memberRequest: AbortController | undefined
 const members = ref<Page<Member> | null>(null)
@@ -98,7 +98,7 @@ async function schedule() {
   const end = stationTime.fromInput(endsAt.value)
   if (!start || !end) {
     confirmation.value = ''
-    writeError.value = '请选择有效的网点时间。遇到时钟切换时，请改选其他时间。'
+    writeError.value = '请选择有效的北京时间。'
     return
   }
   if (Date.parse(start) >= Date.parse(end) || !code.value.trim() || !workerId.value) {
@@ -163,8 +163,8 @@ onBeforeUnmount(() => {
           </select>
         </label>
         <label>班次名称 <input v-model="code" required maxlength="32"></label>
-        <label>开始时间（网点时间） <input v-model="startsAt" type="datetime-local" required></label>
-        <label>结束时间（网点时间） <input v-model="endsAt" type="datetime-local" required></label>
+        <label>开始时间（北京时间） <input v-model="startsAt" type="datetime-local" required></label>
+        <label>结束时间（北京时间） <input v-model="endsAt" type="datetime-local" required></label>
         <div v-if="couriers && couriers.total > couriers.pageSize" class="actions">
           <button type="button" :disabled="courierLoading || saving || couriers.page <= 1" @click="loadCouriers(couriers.page - 1)">人员上一页</button>
           <button type="button" :disabled="courierLoading || saving || couriers.page * couriers.pageSize >= couriers.total" @click="loadCouriers(couriers.page + 1)">人员下一页</button>

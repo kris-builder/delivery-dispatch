@@ -2,6 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { ApiError, postJson, requestJson } from './api'
 import StationQueryPanel from './StationQueryPanel.vue'
+import InboundBatchPanel from './InboundBatchPanel.vue'
+import WaybillLookupPanel from './WaybillLookupPanel.vue'
 import AreaRulePanel from './AreaRulePanel.vue'
 
 interface EmployeeSession {
@@ -10,7 +12,6 @@ interface EmployeeSession {
   role: keyof typeof roleNames
   unitId: string
   unitName: string
-  timeZone: string
   networkId: string
   workerId: string | null
   mustChangePassword: boolean
@@ -135,11 +136,21 @@ async function logout() {
       v-if="employee && !employee.mustChangePassword && ['NETWORK_DISPATCHER', 'NETWORK_OPERATOR'].includes(employee.role)"
       :key="employee.employeeId"
       :dispatcher="employee.role === 'NETWORK_DISPATCHER'"
-      :time-zone="employee.timeZone"
       @session-expired="sessionExpired"
     />
     <AreaRulePanel
       v-if="employee?.role === 'NETWORK_DISPATCHER' && !employee.mustChangePassword"
+      :key="employee.employeeId"
+      @session-expired="sessionExpired"
+    />
+    <InboundBatchPanel
+      v-if="employee && !employee.mustChangePassword && ['NETWORK_DISPATCHER', 'NETWORK_OPERATOR'].includes(employee.role)"
+      :key="employee.employeeId"
+      :dispatcher="employee.role === 'NETWORK_DISPATCHER'"
+      @session-expired="sessionExpired"
+    />
+    <WaybillLookupPanel
+      v-if="employee && !employee.mustChangePassword && ['NETWORK_DISPATCHER', 'NETWORK_OPERATOR'].includes(employee.role)"
       :key="employee.employeeId"
       @session-expired="sessionExpired"
     />

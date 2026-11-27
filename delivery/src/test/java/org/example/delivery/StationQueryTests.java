@@ -94,6 +94,13 @@ class StationQueryTests {
                 """).query(Integer.class).single());
         assertEquals("legacy-dispatcher", jdbc.sql("SELECT login_name FROM employee_account WHERE id = 501")
                 .query(String.class).single());
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM duty_shift WHERE id = 402 AND service_date = '2026-11-25'
+                AND starts_at = '2026-11-25 08:00:00' AND ends_at = '2026-11-25 12:00:00'
+                """).query(Integer.class).single());
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM area_duty WHERE area_id = 201 AND updated_at = '2026-11-24 08:00:00'
+                """).query(Integer.class).single());
     }
 
     @Test

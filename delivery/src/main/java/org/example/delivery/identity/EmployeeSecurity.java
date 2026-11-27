@@ -79,7 +79,8 @@ class EmployeeSecurity {
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/session").hasAuthority(EMPLOYEE_AUTHORITY)
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout", "/api/v1/employee-auth/password-changes")
                         .hasAuthority(EMPLOYEE_AUTHORITY)
-                        .requestMatchers("/api/v1/staff/**").hasAuthority(EMPLOYEE_AUTHORITY)
+                        .requestMatchers("/api/v1/staff/**", "/api/v1/operations/INBOUND_RECEIPT/**")
+                        .hasAuthority(EMPLOYEE_AUTHORITY)
                         .anyRequest().denyAll())
                 .exceptionHandling(errors -> errors
                         .authenticationEntryPoint((request, response, denied) -> ApiProblems.write(json, response,

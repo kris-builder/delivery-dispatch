@@ -9,7 +9,7 @@ interface Page<T> { items: T[]; page: number; pageSize: number; total: number }
 interface Worker { id: string; displayName: string }
 interface Area { id: string; code: string; name: string; regularWorker: Worker | null }
 
-const props = defineProps<{ dispatcher: boolean; timeZone: string }>()
+const props = defineProps<{ dispatcher: boolean }>()
 const emit = defineEmits<{ sessionExpired: [] }>()
 const lifetime = new AbortController()
 const areas = ref<Page<Area> | null>(null)
@@ -18,7 +18,7 @@ const areaLoading = ref(false)
 const workerLoading = ref(false)
 const areaError = ref('')
 const workerError = ref('')
-const stationTime = createStationTime(props.timeZone)
+const stationTime = createStationTime()
 const localInput = ref(stationTime.toInput(example.at))
 const currentAt = ref('')
 
@@ -57,7 +57,7 @@ async function loadWorkers(page: number, at: string) {
 function queryWorkers() {
   const at = stationTime.fromInput(localInput.value)
   if (!at) {
-    workerError.value = '请选择有效的网点时间。遇到时钟切换时，请改选其他时间。'
+    workerError.value = '请选择有效的北京时间。'
     return
   }
   void loadWorkers(1, at)
@@ -73,7 +73,6 @@ onBeforeUnmount(() => lifetime.abort())
 <template>
   <section class="panel station" aria-labelledby="station-title">
     <h2 id="station-title">{{ dispatcher ? '片区与当班人员' : '本网点片区' }}</h2>
-    <p v-if="dispatcher">网点时区 {{ timeZone }}</p>
     <div class="station-results" :class="{ dispatcher }">
       <section aria-label="启用片区">
         <table v-if="areas?.items.length">
@@ -100,13 +99,13 @@ onBeforeUnmount(() => lifetime.abort())
       <section v-if="dispatcher" class="roster" aria-labelledby="roster-title">
         <h3 id="roster-title">在岗配送员</h3>
         <form class="query" @submit.prevent="queryWorkers">
-          <label>查询时间（网点时间） <input v-model="localInput" required type="datetime-local"></label>
+          <label>查询时间（北京时间） <input v-model="localInput" required type="datetime-local"></label>
           <button :disabled="workerLoading">查当班</button>
         </form>
         <p v-if="workerLoading" role="status">正在查询当班人员</p>
         <p v-if="workerError" role="alert" class="error">{{ workerError }}</p>
         <div v-if="workers" aria-live="polite">
-          <p><time :datetime="currentAt">{{ stationTime.format(currentAt) }}（网点时间）</time> · {{ workers.total }} 人在岗</p>
+          <p><time :datetime="currentAt">{{ stationTime.format(currentAt) }}（北京时间）</time> · {{ workers.total }} 人在岗</p>
           <ul v-if="workers.items.length">
             <li v-for="worker in workers.items" :key="worker.id">{{ worker.displayName }}</li>
           </ul>
@@ -120,7 +119,6 @@ onBeforeUnmount(() => lifetime.abort())
     <StationSchedulingPanel
       v-if="dispatcher && currentAt"
       :at="currentAt"
-      :time-zone="timeZone"
       @updated="loadWorkers(1, currentAt)"
       @session-expired="emit('sessionExpired')"
     />

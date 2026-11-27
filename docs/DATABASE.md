@@ -10,7 +10,7 @@
 | --- | --- |
 | 主键及版本 | `id` 为 `BIGINT` 自增主键，`*_id` 与被引用主键类型一致。`version` 为 `BIGINT NOT NULL DEFAULT 0`，业务更新时加一。表内另注明复合主键。 |
 | 必填与引用 | 表中字段默认 `NOT NULL`，`?` 表示可空。`FK → 表名` 默认引用该表主键。`UQ` 是唯一键，`IX` 是普通索引。外键默认限制删除，已有业务引用时通过状态停用或作废。 |
-| 编码及时间 | InnoDB、`utf8mb4`。`waybill_no VARCHAR(64)` 按字符串精确匹配，保留前导零。业务代码使用 `VARCHAR`，命名和允许值由对应 Spec 的迁移明确。`*_at`、`*_from`、`*_until` 为 UTC `DATETIME(6)`，业务日期为 `DATE`，日统计用所属单位时区。 |
+| 编码及时间 | InnoDB、`utf8mb4`。`waybill_no VARCHAR(64)` 按字符串精确匹配，保留前导零。业务代码使用 `VARCHAR`，命名和允许值由对应 Spec 的迁移明确。`*_at`、`*_from`、`*_until` 为北京时间的 `DATETIME(6)`，业务日期以北京时间划分并存为 `DATE`。 |
 | 金额、坐标及凭证 | 金额用 `DECIMAL(12,2)`，币种 `CHAR(3)`，计数用 `INT`。经纬度 `DECIMAL(10,7)` 并记录坐标系。照片只在库里保存受控对象引用及元数据。 |
 | 数据边界 | MySQL 保存可追溯的业务状态和事件。Redis 保存趟次最近位置。账号会话、地图路段及估时保留各自生命周期。 [MySQL CHECK 约束](https://dev.mysql.com/doc/refman/8.4/en/create-table-check-constraints.html) |
 

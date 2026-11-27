@@ -1,6 +1,8 @@
 spring:
   application:
     name: delivery
+  jackson:
+    time-zone: Asia/Shanghai
 
 server:
   servlet:

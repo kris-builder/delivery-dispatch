@@ -28,22 +28,35 @@ final class AuthHttpClient implements AutoCloseable {
         return send(HttpRequest.newBuilder(URI.create(base + path)));
     }
 
-    HttpResponse<String> post(String path, Map<String, String> input, JsonNode csrf) throws Exception {
-        return write("POST", path, input, csrf);
+    HttpResponse<String> post(String path, Map<String, ?> input, JsonNode csrf) throws Exception {
+        return post(path, input, csrf, null);
+    }
+
+    HttpResponse<String> post(String path, Map<String, ?> input, JsonNode csrf, String operationKey) throws Exception {
+        return post(path, input, csrf, operationKey, Duration.ofSeconds(10));
+    }
+
+    HttpResponse<String> post(String path, Map<String, ?> input, JsonNode csrf, String operationKey, Duration timeout)
+            throws Exception {
+        return write("POST", path, input, csrf, operationKey, timeout);
     }
 
     HttpResponse<String> patch(String path, Map<String, ?> input, JsonNode csrf) throws Exception {
-        return write("PATCH", path, input, csrf);
+        return write("PATCH", path, input, csrf, null, Duration.ofSeconds(10));
     }
 
-    private HttpResponse<String> write(String method, String path, Map<String, ?> input, JsonNode csrf) throws Exception {
+    private HttpResponse<String> write(String method, String path, Map<String, ?> input, JsonNode csrf,
+                                       String operationKey, Duration timeout) throws Exception {
         var request = HttpRequest.newBuilder(URI.create(base + path))
                 .header("Content-Type", "application/json")
                 .method(method, HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(input)));
         if (csrf != null) {
             request.header(csrf.path("headerName").asText(), csrf.path("token").asText());
         }
-        return send(request);
+        if (operationKey != null) {
+            request.header("Idempotency-Key", operationKey);
+        }
+        return client.send(request.timeout(timeout).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     JsonNode csrf() throws Exception {
