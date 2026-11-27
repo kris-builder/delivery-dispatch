@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles({"identity-demo", "planning-demo"})
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"delivery.demo.temporary-password=Demo-Temporary-001", "spring.flyway.target=9"})
+        properties = {"delivery.demo.temporary-password=Demo-Temporary-001", "spring.flyway.target=10"})
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DraftAdjustmentHttpTests {
     private static final String PLANS = "/staff/delivery-plans";
@@ -49,6 +49,7 @@ class DraftAdjustmentHttpTests {
     private String foreign;
     private String east;
     private String migratedId;
+    private JsonNode migratedQuarantine;
 
     @BeforeAll
     void prepareRealReceiptsAndUpgradeAnExistingDraft() throws Exception {
@@ -66,6 +67,9 @@ class DraftAdjustmentHttpTests {
                 expect(201, operator.post(BATCHES + "/" + batchId + "/receipts",
                         Map.of("waybillNo", waybill), operator.csrf(), "support-" + waybill));
             }
+            migratedQuarantine = expect(200, operator.post(BATCHES + "/" + batchId + "/quarantines",
+                    Map.of("kind", "UNLISTED", "waybillNo", "000726039999", "physicalConfirmed", true),
+                    operator.csrf(), "support-legacy-unlisted"));
             shiftId = expect(200, dispatcher.get("/staff/shifts?at=2026-11-25T08:00:00%2B08:00"))
                     .path("items").get(0).path("shiftId").asText();
         }
@@ -84,12 +88,19 @@ class DraftAdjustmentHttpTests {
                 SELECT :plan, p.id, p.address_area_id, '东片区', :chen, '陈立', p.version FROM parcel p
                 WHERE p.waybill_no = '000726030001'
                 """).param("plan", migratedId).param("chen", chen).update();
-        Flyway.configure().dataSource(dataSource).load().migrate();
+        var flyway = Flyway.configure().dataSource(dataSource).load();
+        assertEquals("10", flyway.info().current().getVersion().getVersion());
+        flyway.migrate();
     }
 
     @Test
-    void reopensAndAdjustsDraftMigratedFromV9() throws Exception {
+    void preservesQuarantineAndAdjustsDraftMigratedFromV10() throws Exception {
         try (var dispatcher = login(port, "dispatcher-zhou")) {
+            var batch = expect(200, dispatcher.get(BATCHES + "/" + batchId));
+            assertEquals(3, batch.path("receivedCount").asInt());
+            assertEquals(3, batch.path("sortCreditCount").asInt());
+            assertEquals(1, batch.path("quarantines").size());
+            assertEquals(migratedQuarantine, batch.path("quarantines").get(0));
             var old = expect(200, dispatcher.get(PLANS + "/" + migratedId));
             assertEquals("0", old.path("version").asText());
             var changed = expect(200, dispatcher.patch(PLANS + "/" + migratedId,
