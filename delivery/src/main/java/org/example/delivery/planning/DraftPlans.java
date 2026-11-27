@@ -59,10 +59,17 @@ class DraftPlans {
         return store.detail(employee.unitId(), id);
     }
 
-    DraftPlanStore.Detail assignSupport(EmployeePrincipal employee, long id, AdjustDraft input) {
+    DraftPlanStore.Detail adjust(EmployeePrincipal employee, long id, AdjustDraft input) {
         requireDispatcher(employee);
         long version = decimal(input.expectedVersion(), true, "草案版本");
-        long workerId = decimal(input.workerId(), false, "目标配送员");
+        boolean hold = input.action() != null && "HOLD".equals(input.action().asText());
+        if (input.action() != null && !hold) {
+            throw invalid("草案调整动作无效。");
+        }
+        if (hold && input.workerId() != null && !input.workerId().isNull()) {
+            throw invalid("留站时无需指定配送员。");
+        }
+        Long workerId = hold ? null : decimal(input.workerId(), false, "目标配送员");
         if (input.parcelIds() == null || input.parcelIds().isEmpty()) {
             throw invalid("请选择需要调整的运单。");
         }
@@ -77,7 +84,7 @@ class DraftPlans {
         if (reason.isBlank() || reason.length() > 500) {
             throw invalid("调整原因须为 1 到 500 个字符。");
         }
-        return store.assignSupport(employee, id, version, selected, workerId, reason);
+        return store.adjust(employee, id, version, selected, workerId, reason);
     }
 
     Page<StationQueries.Worker> supportWorkers(EmployeePrincipal employee, long id, int page, int pageSize) {
@@ -169,7 +176,8 @@ class DraftPlans {
         return new ApiProblems.Failure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", detail);
     }
 
-    record AdjustDraft(JsonNode expectedVersion, List<JsonNode> parcelIds, JsonNode workerId, JsonNode reason) {}
+    record AdjustDraft(JsonNode action, JsonNode expectedVersion, List<JsonNode> parcelIds, JsonNode workerId,
+                       JsonNode reason) {}
     record CreateDraft(JsonNode batchId, JsonNode shiftId, OffsetDateTime at) {}
     record Prepared(long batchId, long shiftId, OffsetDateTime evaluatedAt, List<Line> lines) {}
     record Line(ReceiptSnapshot receipt, DraftGenerator.Area area, DraftGenerator.Item item) {}

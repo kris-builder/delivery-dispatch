@@ -22,6 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Repository
 @Profile("planning-demo")
 class DraftPlanStore {
+    private static final String HOLD_REASON = "DISPATCHER_HOLD";
+
     private final JdbcClient jdbc;
     private final StationQueries station;
 
@@ -31,8 +33,8 @@ class DraftPlanStore {
     }
 
     @Transactional
-    public Detail assignSupport(EmployeePrincipal employee, long id, long expectedVersion, List<Long> selected,
-                                long workerId, String reason) {
+    public Detail adjust(EmployeePrincipal employee, long id, long expectedVersion, List<Long> selected,
+                         Long workerId, String reason) {
         long network = employee.unitId();
         var draft = jdbc.sql("""
                 SELECT shift_id, inbound_batch_id, evaluated_at, status, version
@@ -45,14 +47,14 @@ class DraftPlanStore {
             throw new ApiProblems.Failure(HttpStatus.CONFLICT, "DRAFT_VERSION_CONFLICT", "草案已变化，请重新打开后核对。");
         }
         var scope = new StationQueries.StaffContext(network, employee.role());
-        var worker = DraftPlans.readAll(page ->
+        var worker = workerId == null ? null : DraftPlans.readAll(page ->
                 station.onDutyWorkersForShift(scope, draft.shiftId(), draft.evaluatedAt().toInstant(), page, 100))
                 .stream().filter(candidate -> candidate.id().equals(Long.toString(workerId))).findFirst()
                 .orElseThrow(() -> new ApiProblems.Failure(HttpStatus.CONFLICT, "DRAFT_WORKER_UNAVAILABLE",
                         "目标配送员不在本网点所选班次的在岗名单中。"));
 
         var items = jdbc.sql("""
-                SELECT i.parcel_id, i.proposed_worker_id
+                SELECT i.parcel_id, i.proposed_worker_id, i.reason_code
                 FROM plan_item i
                 JOIN parcel p ON p.id = i.parcel_id AND p.version = i.parcel_version
                 JOIN inbound_receipt r ON r.parcel_id = p.id AND r.batch_id = :batch AND r.voided_at IS NULL
@@ -63,13 +65,16 @@ class DraftPlanStore {
                 ORDER BY i.parcel_id FOR UPDATE OF i, p, r
                 """).param("batch", draft.batchId()).param("network", network)
                 .param("id", id).param("selected", selected).query((row, index) -> new SelectedItem(
-                row.getLong("parcel_id"), row.getObject("proposed_worker_id", Long.class))).list();
+                row.getLong("parcel_id"), row.getObject("proposed_worker_id", Long.class),
+                row.getString("reason_code"))).list();
         if (items.size() != selected.size()) {
             throw new ApiProblems.Failure(HttpStatus.CONFLICT, "DRAFT_PARCEL_CHANGED",
                     "所选运单包含当前不可安排的件，请刷新后核对。");
         }
 
-        var changes = items.stream().filter(item -> !Objects.equals(item.oldWorkerId(), workerId)).toList();
+        var changes = items.stream().filter(item -> worker == null
+                ? !HOLD_REASON.equals(item.reasonCode())
+                : !Objects.equals(item.oldWorkerId(), workerId)).toList();
         if (changes.isEmpty()) {
             return detail(network, id);
         }
@@ -78,9 +83,10 @@ class DraftPlanStore {
         LocalDateTime changedAt = BeijingTime.now();
         for (var item : changes) {
             jdbc.sql("""
-                    UPDATE plan_item SET proposed_worker_id = :worker, proposed_worker_name = :name, reason_code = NULL
+                    UPDATE plan_item SET proposed_worker_id = :worker, proposed_worker_name = :name, reason_code = :code
                     WHERE plan_id = :plan AND parcel_id = :parcel
-                    """).param("worker", workerId).param("name", worker.displayName())
+                    """).param("worker", workerId).param("name", worker == null ? null : worker.displayName())
+                    .param("code", worker == null ? HOLD_REASON : null)
                     .param("plan", id).param("parcel", item.parcelId()).update();
             jdbc.sql("""
                     INSERT INTO plan_adjustment (plan_id, parcel_id, plan_version, old_worker_id, new_worker_id,
@@ -195,7 +201,7 @@ class DraftPlanStore {
     }
 
     private record LockedDraft(long shiftId, long batchId, OffsetDateTime evaluatedAt, String status, long version) {}
-    private record SelectedItem(long parcelId, Long oldWorkerId) {}
+    private record SelectedItem(long parcelId, Long oldWorkerId, String reasonCode) {}
     private record Header(String id, String batchId, String batchNumber, String shiftId, String createdBy,
                           OffsetDateTime createdAt, OffsetDateTime evaluatedAt, String status, String version) {}
     private record AreaKey(String id, String name) {}
