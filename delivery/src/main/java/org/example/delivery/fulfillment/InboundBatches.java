@@ -103,8 +103,13 @@ class InboundBatches {
         var quarantines = jdbc.sql("""
                 SELECT * FROM inbound_quarantine WHERE batch_id = :batch ORDER BY id DESC
                 """).param("batch", batchId).query(InboundQuarantines.MAPPER).list();
+        var reviews = jdbc.sql("""
+                SELECT r.*, q.temporary_no FROM inbound_quarantine_review r
+                JOIN inbound_quarantine q ON q.id = r.quarantine_id
+                WHERE q.batch_id = :batch ORDER BY q.id DESC
+                """).param("batch", batchId).query(InboundQuarantineReviews.MAPPER).list();
         return new BatchDetail(Long.toString(batchId), source, lines.size(), counts.received(), counts.assigned(),
-                counts.pending(), counts.sortCredits(), lines, quarantines);
+                counts.pending(), counts.sortCredits(), lines, quarantines, reviews);
     }
 
     String requireBatch(long unit, long batchId) {
@@ -207,6 +212,7 @@ class InboundBatches {
     record BatchSummary(String id, String sourceBatchNo, long expectedCount, long receivedCount) {}
     record BatchDetail(String id, String sourceBatchNo, long expectedCount, long receivedCount,
                        long assignedCount, long pendingAreaCount, long sortCreditCount, List<ExpectedLine> expected,
-                       List<InboundQuarantines.Quarantine> quarantines) {}
+                       List<InboundQuarantines.Quarantine> quarantines,
+                       List<InboundQuarantineReviews.Review> quarantineReviews) {}
     record ImportResult(BatchDetail batch, boolean created) {}
 }

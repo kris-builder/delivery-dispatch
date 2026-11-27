@@ -11,7 +11,7 @@ interface Batch {
 
 interface Waybill {
   waybillNo: string
-  status: 'EXPECTED' | 'PENDING_AREA' | 'RECEIVED' | 'QUARANTINED'
+  status: 'EXPECTED' | 'PENDING_AREA' | 'RECEIVED' | 'QUARANTINED' | 'RETURNED_UPSTREAM'
   firstReceivedAt: string | null
   receivedBatch: Batch | null
   area: { name: string } | null
@@ -25,9 +25,13 @@ const waybillNo = ref('')
 const result = ref<Waybill | null>(null)
 const loading = ref(false)
 const error = ref('')
-const statuses = { EXPECTED: '仅应到', PENDING_AREA: '已实收待补分', RECEIVED: '已实收已分区', QUARANTINED: '隔离待核' }
+const statuses = {
+  EXPECTED: '仅应到', PENDING_AREA: '已实收待补分', RECEIVED: '已实收已分区',
+  QUARANTINED: '隔离待核', RETURNED_UPSTREAM: '已交回上游',
+}
 const eventNames: Record<string, string> = {
   INBOUND_RECEIVED: '入站实收', MANUAL_AREA_ASSIGNED: '人工补分', INBOUND_QUARANTINED: '破损实收隔离',
+  INBOUND_RETURNED_UPSTREAM: '交回上游',
 }
 const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   dateStyle: 'medium', timeStyle: 'medium', timeZone: BEIJING_ZONE,
