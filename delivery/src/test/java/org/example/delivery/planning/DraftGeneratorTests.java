@@ -16,8 +16,7 @@ class DraftGeneratorTests {
         assertEquals(60, draft.total());
         assertEquals(60, draft.assigned());
         assertEquals(0, draft.pending());
-        assertEquals("江岸网点", draft.networkName());
-        assertEquals("东区", draft.areaName());
+        assertEquals("东区", draft.groups().getFirst().area().name());
         assertEquals("000726050001", draft.items().getFirst().waybillNo());
         assertEquals(60, draft.items().stream().map(DraftGenerator.Item::waybillNo).distinct().count());
         assertTrue(draft.items().stream().allMatch(item -> item.proposedWorker().equals(DraftPreviewFixture.CHEN)
