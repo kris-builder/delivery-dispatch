@@ -50,7 +50,19 @@ class InboundMigrationTests {
                 """).update();
         Flyway.configure().dataSource(dataSource).target("7").load().migrate();
         new ResourceDatabasePopulator(new ClassPathResource("beijing-legacy-receipt.sql")).execute(dataSource);
+        Flyway.configure().dataSource(dataSource).target("9").load().migrate();
+        String priorReceipt = jdbc.sql("""
+                SELECT CONCAT(r.received_at, '|', c.credited_at, '|', c.employee_id, '|', p.stage)
+                FROM inbound_receipt r JOIN sort_credit c ON c.receipt_id = r.id JOIN parcel p ON p.id = r.parcel_id
+                WHERE r.id = 9001
+                """).query(String.class).single();
         Flyway.configure().dataSource(dataSource).load().migrate();
+        assertEquals(priorReceipt, jdbc.sql("""
+                SELECT CONCAT(r.received_at, '|', c.credited_at, '|', c.employee_id, '|', p.stage)
+                FROM inbound_receipt r JOIN sort_credit c ON c.receipt_id = r.id JOIN parcel p ON p.id = r.parcel_id
+                WHERE r.id = 9001
+                """).query(String.class).single());
+        assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM inbound_quarantine").query(Integer.class).single());
         assertEquals(operatorId, jdbc.sql("SELECT imported_by FROM inbound_batch WHERE source_batch_no = 'V6-DEMO'")
                 .query(Long.class).single());
         assertEquals(1, jdbc.sql("SELECT COUNT(*) FROM area_duty WHERE area_id = :area")

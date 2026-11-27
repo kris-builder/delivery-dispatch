@@ -4,6 +4,7 @@ import { ApiError, postJson, requestJson } from './api'
 import { pendingAreaReasons, type PendingAreaReason } from './inboundAreaReasons'
 import AreaAssignmentPanel from './AreaAssignmentPanel.vue'
 import SortCreditsPanel from './SortCreditsPanel.vue'
+import { createStationTime } from './stationTime'
 import demo from '../../fixtures/mvp.json'
 
 interface BatchSummary {
@@ -18,10 +19,11 @@ interface BatchDetail extends BatchSummary {
   pendingAreaCount: number
   sortCreditCount: number
   expected: { waybillNo: string; street: string | null; community: string | null }[]
+  quarantines: Quarantine[]
 }
 
 interface Receipt {
-  status: 'RECEIVED' | 'PENDING_AREA' | 'ALREADY_RECEIVED'
+  status: 'RECEIVED' | 'PENDING_AREA' | 'ALREADY_RECEIVED' | 'QUARANTINED'
   waybillNo: string
   receivedBy: string
   area: { id: string; name: string } | null
@@ -33,11 +35,32 @@ interface Scan {
   key: string
 }
 
+const quarantineNames = { DAMAGED: '已识别破损', MISSING_LABEL: '缺单号', UNLISTED: '清单外暂存' }
+type QuarantineKind = keyof typeof quarantineNames
+interface Quarantine {
+  id: string
+  kind: QuarantineKind
+  waybillNo: string | null
+  temporaryNo: string | null
+  note: string
+  evidenceRef: string | null
+  reportedBy: string
+  reportedAt: string
+}
+interface QuarantineDraft {
+  kind: QuarantineKind
+  waybillNo: string
+  note: string
+  evidenceRef: string
+  physicalConfirmed: boolean
+}
+
 const props = defineProps<{ dispatcher: boolean }>()
 const emit = defineEmits<{ sessionExpired: [] }>()
 const root = '/staff/inbound-batches'
 const batches = ref<BatchSummary[]>([])
 const selected = ref('')
+const batchSelect = ref<HTMLSelectElement | null>(null)
 const detail = ref<BatchDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -47,9 +70,20 @@ const waybill = ref('')
 const queue = ref<Scan[]>([])
 const sending = ref(false)
 const blocked = ref('')
-const history = ref<{ key: string; waybill: string; message: string; failed: boolean }[]>([])
+const history = ref<{ key: string; waybill: string; message: string; errorCode?: string | null }[]>([])
 const creditRevision = ref(0)
-const batchLocked = computed(() => scanning.value || sending.value || queue.value.length > 0)
+const stationTime = createStationTime()
+const quarantineDraft = ref<QuarantineDraft | null>(null)
+const quarantineAttempt = ref<{ key: string; body: Omit<QuarantineDraft, 'waybillNo'> & { waybillNo?: string } } | null>(null)
+const quarantineSaving = ref(false)
+const quarantineMessage = ref('')
+const quarantineError = ref('')
+const batchLocked = computed(() => scanning.value || sending.value || queue.value.length > 0 || !!quarantineDraft.value)
+const quarantineCounts = computed(() => {
+  const counts = { DAMAGED: 0, MISSING_LABEL: 0, UNLISTED: 0 }
+  for (const item of detail.value?.quarantines ?? []) counts[item.kind]++
+  return counts
+})
 
 function showError(reason: unknown) {
   if (reason instanceof ApiError && reason.status === 401) {
@@ -85,6 +119,7 @@ onMounted(() => run(loadBatches))
 function loadSelected() {
   detail.value = null
   history.value = []
+  quarantineMessage.value = ''
   return run(async () => {
     detail.value = selected.value ? await requestJson<BatchDetail>(`${root}/${selected.value}`) : null
   })
@@ -118,7 +153,7 @@ function stopScanning() {
 
 function queueScan() {
   const value = waybill.value.trim()
-  if (!value || !scanning.value) return
+  if (!value || !scanning.value || quarantineSaving.value) return
   queue.value.push({ waybillNo: value, key: crypto.randomUUID() })
   waybill.value = ''
   scanInput.value?.focus()
@@ -126,6 +161,7 @@ function queueScan() {
 }
 
 function resultMessage(receipt: Receipt) {
+  if (receipt.status === 'QUARANTINED') return '已隔离 · 上游交接待核'
   const area = receipt.area?.name
   if (receipt.status === 'ALREADY_RECEIVED') {
     return area ? `重复扫码 · ${area}` : '重复扫码 · 待补分'
@@ -134,8 +170,8 @@ function resultMessage(receipt: Receipt) {
   return receipt.pendingAreaReason ? `已实收待补分 · ${pendingAreaReasons[receipt.pendingAreaReason]}` : '已实收待补分'
 }
 
-function addResult(scan: Scan, message: string, failed = false) {
-  history.value = [{ key: scan.key, waybill: scan.waybillNo, message, failed }, ...history.value].slice(0, 8)
+function addResult(scan: Scan, message: string, errorCode?: string | null) {
+  history.value = [{ key: scan.key, waybill: scan.waybillNo, message, errorCode }, ...history.value].slice(0, 8)
 }
 
 async function sendQueued() {
@@ -162,7 +198,7 @@ async function sendQueued() {
           blocked.value = `${scan.waybillNo} · ${note}`
           return
         }
-        addResult(scan, reason.message, true)
+        addResult(scan, reason.message, reason.code ?? 'REQUEST_FAILED')
         queue.value.shift()
         continue
       }
@@ -192,6 +228,51 @@ function refreshAfterAssignment() {
   creditRevision.value++
   return run(loadBatches)
 }
+
+function switchBatch() {
+  stopScanning()
+  void nextTick(() => batchSelect.value?.focus())
+}
+
+function beginQuarantine(kind: QuarantineKind, waybillNo = '') {
+  quarantineDraft.value = { kind, waybillNo, note: '', evidenceRef: '', physicalConfirmed: false }
+  quarantineMessage.value = ''
+  quarantineError.value = ''
+}
+
+async function saveQuarantine() {
+  const draft = quarantineDraft.value
+  if (!draft || quarantineSaving.value || sending.value || queue.value.length) return
+  const attempt = quarantineAttempt.value ?? {
+    key: crypto.randomUUID(),
+    body: {
+      ...draft, waybillNo: draft.kind === 'MISSING_LABEL' ? undefined : draft.waybillNo.trim(),
+      note: draft.note.trim(), evidenceRef: draft.evidenceRef.trim(),
+    },
+  }
+  quarantineAttempt.value = attempt
+  quarantineSaving.value = true
+  quarantineError.value = ''
+  try {
+    const path = `${root}/${selected.value}`
+    const result = await postJson<Quarantine>(`${path}/quarantines`, attempt.body, {
+      operationKey: attempt.key, signal: AbortSignal.timeout(8000),
+    })
+    quarantineDraft.value = null
+    quarantineAttempt.value = null
+    quarantineMessage.value = `${result.waybillNo ?? result.temporaryNo} 已登记 · ${quarantineNames[result.kind]}`
+    await run(async () => { detail.value = await requestJson<BatchDetail>(path) })
+    if (scanning.value) scanInput.value?.focus()
+  } catch (failure) {
+    if (failure instanceof ApiError && failure.status === 401) emit('sessionExpired')
+    if (failure instanceof ApiError && failure.status < 500 && failure.code !== 'CSRF_INVALID') {
+      quarantineAttempt.value = null
+    }
+    quarantineError.value = failure instanceof ApiError ? failure.message : '登记结果待确认，请用原操作重试。'
+  } finally {
+    quarantineSaving.value = false
+  }
+}
 </script>
 
 <template>
@@ -202,7 +283,7 @@ function refreshAfterAssignment() {
     </div>
     <label v-if="batches.length">
       应到批次
-      <select v-model="selected" :disabled="loading || batchLocked" @change="loadSelected">
+      <select ref="batchSelect" v-model="selected" :disabled="loading || batchLocked" @change="loadSelected">
         <option v-for="batch in batches" :key="batch.id" :value="batch.id">{{ batch.sourceBatchNo }}</option>
       </select>
     </label>
@@ -223,7 +304,7 @@ function refreshAfterAssignment() {
             扫码或手输运单号
             <input ref="scanInput" v-model="waybill" maxlength="64" autocomplete="off" spellcheck="false">
           </label>
-          <button type="submit">录入</button>
+          <button type="submit" :disabled="quarantineSaving">录入</button>
           <button type="button" @click="stopScanning">退出扫码</button>
         </form>
         <div v-if="blocked" class="scan-retry">
@@ -232,12 +313,60 @@ function refreshAfterAssignment() {
         </div>
         <p v-if="queue.length" role="status">待处理 {{ queue.length }} 件</p>
         <ul v-if="history.length" class="scan-results" aria-live="polite" aria-label="最近扫码结果">
-          <li v-for="result in history" :key="result.key" :class="{ error: result.failed }">
+          <li v-for="result in history" :key="result.key" :class="{ error: result.errorCode }">
             <code>{{ result.waybill }}</code>
             <strong>{{ result.message }}</strong>
+            <button v-if="result.errorCode === 'WAYBILL_NOT_EXPECTED'
+                         && !detail.quarantines.some(item => item.waybillNo === result.waybill)" type="button"
+                    :disabled="!!quarantineDraft" @click="beginQuarantine('UNLISTED', result.waybill)">暂存此件</button>
+            <button v-if="result.errorCode === 'INBOUND_BATCH_MISMATCH' && scanning" type="button"
+                    :disabled="sending || queue.length > 0 || !!quarantineDraft" @click="switchBatch">切换批次</button>
           </li>
         </ul>
+        <div class="quarantine-actions">
+          <button type="button" :disabled="!!quarantineDraft" @click="beginQuarantine('DAMAGED')">登记破损</button>
+          <button type="button" :disabled="!!quarantineDraft" @click="beginQuarantine('MISSING_LABEL')">登记缺单号</button>
+        </div>
+        <form v-if="quarantineDraft" class="quarantine-form" @submit.prevent="saveQuarantine">
+          <h3>{{ quarantineNames[quarantineDraft.kind] }}</h3>
+          <fieldset :disabled="!!quarantineAttempt">
+            <label v-if="quarantineDraft.kind !== 'MISSING_LABEL'">
+              运单号 <input v-model="quarantineDraft.waybillNo" required maxlength="64"
+                          :readonly="quarantineDraft.kind === 'UNLISTED'">
+            </label>
+            <label>
+              现场说明<template v-if="quarantineDraft.kind === 'UNLISTED'">（可选）</template>
+              <input v-model="quarantineDraft.note" :required="quarantineDraft.kind !== 'UNLISTED'" maxlength="500">
+            </label>
+            <label>凭证编号（可选） <input v-model="quarantineDraft.evidenceRef" maxlength="255"></label>
+            <label v-if="quarantineDraft.kind === 'UNLISTED'" class="confirm-physical">
+              <input v-model="quarantineDraft.physicalConfirmed" type="checkbox" required> 确认实物在场
+            </label>
+          </fieldset>
+          <div class="quarantine-actions">
+            <button :disabled="quarantineSaving || sending || queue.length > 0">
+              {{ quarantineAttempt ? '重试原登记' : '确认登记' }}
+            </button>
+            <button v-if="!quarantineAttempt" type="button" @click="quarantineDraft = null; quarantineError = ''">取消</button>
+          </div>
+          <p v-if="quarantineError" class="error" role="alert">{{ quarantineError }}</p>
+        </form>
+        <p v-if="quarantineMessage" role="status">{{ quarantineMessage }}</p>
       </div>
+      <details v-if="detail.quarantines.length">
+        <summary>隔离和暂存明细（{{ detail.quarantines.length }}）</summary>
+        <p>{{ quarantineNames.DAMAGED }} {{ quarantineCounts.DAMAGED }} · {{ quarantineNames.MISSING_LABEL }}
+          {{ quarantineCounts.MISSING_LABEL }} · {{ quarantineNames.UNLISTED }} {{ quarantineCounts.UNLISTED }}</p>
+        <ul class="quarantine-lines">
+          <li v-for="item in detail.quarantines" :key="item.id">
+            <p><code>{{ item.waybillNo ?? item.temporaryNo }}</code> · {{ quarantineNames[item.kind] }} · 上游交接待核</p>
+            <p v-if="item.note || item.evidenceRef">
+              {{ item.note }}<template v-if="item.evidenceRef">{{ item.note ? ' · ' : '' }}凭证 {{ item.evidenceRef }}</template>
+            </p>
+            <p><time :datetime="item.reportedAt">{{ stationTime.format(item.reportedAt) }}</time> · 员工编号 {{ item.reportedBy }}</p>
+          </li>
+        </ul>
+      </details>
       <details>
         <summary>应到明细</summary>
         <ul class="expected-lines">
@@ -277,4 +406,11 @@ function refreshAfterAssignment() {
 .scan-retry { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .scan-results { padding: 0; margin: 0; list-style: none; }
 .scan-results li { display: flex; gap: 6px 12px; flex-wrap: wrap; padding: 7px 0; border-bottom: 1px solid #e7edea; }
+.quarantine-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.quarantine-form, .quarantine-form fieldset, .quarantine-form label { display: grid; gap: 8px; }
+.quarantine-form fieldset { border: 1px solid #d7e3dd; min-width: 0; }
+.quarantine-form h3 { font-size: 16px; margin: 0; }
+.quarantine-form .confirm-physical { display: flex; align-items: center; min-height: 36px; }
+.quarantine-form input[type=checkbox] { width: auto; min-height: 0; }
+.quarantine-lines { display: grid; gap: 8px; padding-left: 20px; }
 </style>

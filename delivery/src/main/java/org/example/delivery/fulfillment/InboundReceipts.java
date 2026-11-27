@@ -27,13 +27,15 @@ class InboundReceipts {
     static final String COMMAND = "INBOUND_RECEIPT";
     private static final String RECEIPTS = """
             SELECT r.id, r.batch_id, p.waybill_no, r.received_by, r.received_at, r.voided_at,
-                   p.address_area_id, p.address_area_name, p.pending_area_reason
+                   p.address_area_id, p.address_area_name, p.pending_area_reason, p.stage
             FROM inbound_receipt r JOIN parcel p ON p.id = r.parcel_id
             """;
     private static final RowMapper<Receipt> RECEIPT_MAPPER = (row, index) -> {
         String areaId = row.getString("address_area_id");
         String reason = row.getString("pending_area_reason");
-        return new Receipt(areaId == null ? "PENDING_AREA" : "RECEIVED", row.getString("id"), row.getString("batch_id"),
+        String status = "QUARANTINED".equals(row.getString("stage")) ? "QUARANTINED"
+                : areaId == null ? "PENDING_AREA" : "RECEIVED";
+        return new Receipt(status, row.getString("id"), row.getString("batch_id"),
                 row.getString("waybill_no"), BeijingTime.fromDatabase(row.getObject("received_at", LocalDateTime.class)),
                 row.getString("received_by"), areaId == null ? null : new ReceiptArea(areaId, row.getString("address_area_name")),
                 reason == null ? null : PendingReason.valueOf(reason), row.getObject("voided_at") != null);
@@ -61,15 +63,15 @@ class InboundReceipts {
         if (operation.result() != null) {
             return json.readValue(operation.result(), Operation.class);
         }
-        long parcelId = jdbc.sql("SELECT id FROM parcel WHERE network_id = :network AND waybill_no = :waybill FOR UPDATE")
-                .param("network", employee.unitId()).param("waybill", waybill).query(Long.class).optional()
-                .orElseThrow(InboundReceipts::unlisted);
-        var active = jdbc.sql(RECEIPTS + " WHERE r.active_parcel_id = :parcel")
-                .param("parcel", parcelId).query(RECEIPT_MAPPER).optional();
+        var parcel = lockParcel(employee.unitId(), waybill).orElseThrow(InboundReceipts::unlisted);
+        var active = activeReceipt(parcel.id());
+        if (active.isEmpty() && "QUARANTINED".equals(parcel.stage())) {
+            throw new ApiProblems.Failure(HttpStatus.CONFLICT, "WAYBILL_QUARANTINED", "此件已暂存，等待上游核对。");
+        }
         LocalDateTime now = BeijingTime.now();
         Operation response = active.isPresent()
                 ? new Operation(200, active.get().asDuplicate())
-                : new Operation(201, createReceipt(employee, batchId, parcelId, waybill, operation.id(), now));
+                : new Operation(201, createReceipt(employee, batchId, parcel.id(), waybill, operation.id(), now, false));
         completeOperation(operation.id(), response, now);
         return response;
     }
@@ -123,28 +125,41 @@ class InboundReceipts {
         return operation;
     }
 
-    private Receipt createReceipt(EmployeePrincipal employee, long batch, long parcel, String waybill, long operation,
-                                  LocalDateTime now) {
+    Optional<LockedParcel> lockParcel(long unit, String waybill) {
+        return jdbc.sql("SELECT id, stage FROM parcel WHERE network_id = :network AND waybill_no = :waybill FOR UPDATE")
+                .param("network", unit).param("waybill", waybill)
+                .query((row, index) -> new LockedParcel(row.getLong("id"), row.getString("stage"))).optional();
+    }
+
+    Optional<Receipt> activeReceipt(long parcel) {
+        return jdbc.sql(RECEIPTS + " WHERE r.active_parcel_id = :parcel")
+                .param("parcel", parcel).query(RECEIPT_MAPPER).optional();
+    }
+
+    Receipt createReceipt(EmployeePrincipal employee, long batch, long parcel, String waybill, long operation,
+                          LocalDateTime now, boolean damaged) {
         ExpectedAddress expected = jdbc.sql("""
                 SELECT recipient_phone, street, community, address FROM inbound_expected
                 WHERE batch_id = :batch AND parcel_id = :parcel
                 """).param("batch", batch).param("parcel", parcel).query((row, index) -> new ExpectedAddress(
                         row.getString("recipient_phone"), row.getString("street"), row.getString("community"),
                         row.getString("address"))).optional().orElseThrow(() -> wrongBatch(parcel));
-        Match match = matchAddress(employee.unitId(), expected);
-        Long areaId = match.area() == null ? null : match.area().id();
-        String name = match.area() == null ? null : match.area().name();
-        String pending = match.pendingReason() == null ? null : match.pendingReason().name();
+        Match match = damaged ? null : matchAddress(employee.unitId(), expected);
+        Long areaId = match == null || match.area() == null ? null : match.area().id();
+        String name = areaId == null ? null : match.area().name();
+        PendingReason pending = match == null ? null : match.pendingReason();
         jdbc.sql("""
-                UPDATE parcel SET stage = 'IN_STATION', holder_kind = 'NETWORK', holder_unit_id = :unit,
+                UPDATE parcel SET stage = :stage, holder_kind = 'NETWORK', holder_unit_id = :unit,
                     recipient_phone = :phone, street = :street, community = :community, address = :address,
                     address_area_id = :area, address_area_name = :areaName, pending_area_reason = :pending,
                     version = version + 1, updated_at = :now
                 WHERE id = :parcel
-                """).param("unit", employee.unitId()).param("phone", expected.phone()).param("street", expected.street())
+                """).param("stage", damaged ? "QUARANTINED" : "IN_STATION")
+                .param("unit", employee.unitId()).param("phone", expected.phone()).param("street", expected.street())
                 .param("community", expected.community()).param("address", expected.address()).param("area", areaId)
-                .param("areaName", name).param("pending", pending).param("now", now).param("parcel", parcel).update();
-        long event = insertEvent(employee, batch, parcel, operation, now, areaId, pending);
+                .param("areaName", name).param("pending", pending == null ? null : pending.name())
+                .param("now", now).param("parcel", parcel).update();
+        long event = insertEvent(employee, batch, parcel, operation, now, areaId, pending, damaged);
         var receiptKey = new GeneratedKeyHolder();
         jdbc.sql("""
                 INSERT INTO inbound_receipt (batch_id, parcel_id, scan_event_id, received_by, received_at, matched_area_id)
@@ -156,21 +171,22 @@ class InboundReceipts {
         if (areaId != null) {
             insertSortCredit(employee, receipt, event, now);
         }
-        return new Receipt(areaId == null ? "PENDING_AREA" : "RECEIVED", Long.toString(receipt), Long.toString(batch),
+        String status = damaged ? "QUARANTINED" : areaId == null ? "PENDING_AREA" : "RECEIVED";
+        return new Receipt(status, Long.toString(receipt), Long.toString(batch),
                 waybill, BeijingTime.fromDatabase(now), Long.toString(employee.accountId()),
-                areaId == null ? null : new ReceiptArea(areaId.toString(), name), match.pendingReason(), false);
+                areaId == null ? null : new ReceiptArea(areaId.toString(), name), pending, false);
     }
 
     private long insertEvent(EmployeePrincipal employee, long batch, long parcel, long operation, LocalDateTime now,
-                             Long area, String pending) {
+                             Long area, PendingReason pending, boolean damaged) {
         var details = json.createObjectNode();
         details.put("batchId", Long.toString(batch));
         if (area != null) {
             details.put("areaId", area.toString());
-        } else {
-            details.put("pendingAreaReason", pending);
+        } else if (pending != null) {
+            details.put("pendingAreaReason", pending.name());
         }
-        return writeEvent(employee, parcel, operation, now, "INBOUND_RECEIVED", details);
+        return writeEvent(employee, parcel, operation, now, damaged ? "INBOUND_QUARANTINED" : "INBOUND_RECEIVED", details);
     }
 
     long writeEvent(EmployeePrincipal employee, long parcel, long operation, LocalDateTime now,
@@ -203,11 +219,18 @@ class InboundReceipts {
                 .match(network, address.street(), address.community());
     }
 
-    private ApiProblems.Failure wrongBatch(long parcel) {
-        boolean otherExpected = jdbc.sql("SELECT EXISTS (SELECT 1 FROM inbound_expected WHERE parcel_id = :parcel)")
+    boolean isExpected(long parcel) {
+        return jdbc.sql("SELECT EXISTS (SELECT 1 FROM inbound_expected WHERE parcel_id = :parcel)")
                 .param("parcel", parcel).query(Boolean.class).single();
-        return otherExpected ? new ApiProblems.Failure(HttpStatus.CONFLICT, "INBOUND_BATCH_MISMATCH",
-                "此运单在本网点另一批次的应到清单，切换到对应批次后再扫。") : unlisted();
+    }
+
+    private ApiProblems.Failure wrongBatch(long parcel) {
+        return isExpected(parcel) ? batchMismatch() : unlisted();
+    }
+
+    static ApiProblems.Failure batchMismatch() {
+        return new ApiProblems.Failure(HttpStatus.CONFLICT, "INBOUND_BATCH_MISMATCH",
+                "此运单在本网点另一批次的应到清单，切换到对应批次后再扫。");
     }
 
     private static ApiProblems.Failure unlisted() {
@@ -229,12 +252,14 @@ class InboundReceipts {
     }
 
     private record ExpectedAddress(String phone, String street, String community, String address) {}
+    record LockedParcel(long id, String stage) {}
     record StoredOperation(long id, byte[] hash, String result) {}
     record Operation(int status, Receipt result) {}
     record ReceiptArea(String id, String name) {}
     record Receipt(String status, String receiptId, String batchId, String waybillNo, OffsetDateTime receivedAt,
                    String receivedBy, ReceiptArea area, PendingReason pendingAreaReason, boolean voided) {
         Receipt asDuplicate() {
+            if ("QUARANTINED".equals(status)) return this;
             return new Receipt("ALREADY_RECEIVED", receiptId, batchId, waybillNo, receivedAt,
                     receivedBy, area, pendingAreaReason, voided);
         }
