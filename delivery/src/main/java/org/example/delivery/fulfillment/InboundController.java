@@ -1,9 +1,11 @@
 package org.example.delivery.fulfillment;
 
 import java.net.URI;
+import java.time.LocalDate;
 import java.util.List;
 
 import org.example.delivery.identity.EmployeePrincipal;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,12 +25,15 @@ class InboundController {
     private final InboundReceipts receipts;
     private final WaybillLookup waybills;
     private final AreaAssignments assignments;
+    private final SortCredits sortCredits;
 
-    InboundController(InboundBatches batches, InboundReceipts receipts, WaybillLookup waybills, AreaAssignments assignments) {
+    InboundController(InboundBatches batches, InboundReceipts receipts, WaybillLookup waybills,
+                      AreaAssignments assignments, SortCredits sortCredits) {
         this.batches = batches;
         this.receipts = receipts;
         this.waybills = waybills;
         this.assignments = assignments;
+        this.sortCredits = sortCredits;
     }
 
     @PostMapping("/staff/inbound-batches")
@@ -88,6 +93,13 @@ class InboundController {
                                           @PathVariable long parcelId, @RequestBody AssignmentInput input,
                                           @RequestHeader("Idempotency-Key") String key) {
         return assignments.assign(employee, parcelId, input.areaId(), key);
+    }
+
+    @GetMapping("/staff/me/sort-credits")
+    SortCredits.Statement mySortCredits(@AuthenticationPrincipal EmployeePrincipal employee,
+                                        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+                                        LocalDate date) {
+        return sortCredits.findMine(employee, date);
     }
 
     record AssignmentInput(long areaId) {}
