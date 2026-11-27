@@ -51,24 +51,24 @@ class InboundMigrationTests {
         Flyway.configure().dataSource(dataSource).target("7").load().migrate();
         new ResourceDatabasePopulator(new ClassPathResource("beijing-legacy-receipt.sql")).execute(dataSource);
         Flyway.configure().dataSource(dataSource).target("9").load().migrate();
-        String priorReceipt = jdbc.sql("""
+        String receiptState = """
                 SELECT CONCAT(r.received_at, '|', c.credited_at, '|', c.employee_id, '|', p.stage)
                 FROM inbound_receipt r JOIN sort_credit c ON c.receipt_id = r.id JOIN parcel p ON p.id = r.parcel_id
                 WHERE r.id = 9001
-                """).query(String.class).single();
+                """;
+        String priorReceipt = jdbc.sql(receiptState).query(String.class).single();
         Flyway.configure().dataSource(dataSource).target("11").load().migrate();
-        assertEquals(priorReceipt, jdbc.sql("""
-                SELECT CONCAT(r.received_at, '|', c.credited_at, '|', c.employee_id, '|', p.stage)
-                FROM inbound_receipt r JOIN sort_credit c ON c.receipt_id = r.id JOIN parcel p ON p.id = r.parcel_id
-                WHERE r.id = 9001
-                """).query(String.class).single());
+        assertEquals(priorReceipt, jdbc.sql(receiptState).query(String.class).single());
         assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM inbound_quarantine").query(Integer.class).single());
         jdbc.sql("""
                 INSERT INTO inbound_quarantine (batch_id, temporary_no, kind, note, reported_by, reported_at, operation_receipt_id)
                 SELECT batch_id, 'IN-LEGACY', 'MISSING_LABEL', '面单模糊', received_by, received_at, 9001
                 FROM inbound_receipt WHERE id = 9001
                 """).update();
+        Flyway.configure().dataSource(dataSource).target("12").load().migrate();
         Flyway.configure().dataSource(dataSource).load().migrate();
+        assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM delivery_agreement").query(Integer.class).single());
+        assertEquals(priorReceipt, jdbc.sql(receiptState).query(String.class).single());
         assertEquals(1, jdbc.sql("""
                 SELECT COUNT(*) FROM inbound_quarantine WHERE temporary_no = 'IN-LEGACY'
                   AND status = 'UPSTREAM_REVIEW' AND reported_at = '2026-11-26 00:30:00.123456'

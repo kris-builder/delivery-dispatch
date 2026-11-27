@@ -76,6 +76,111 @@ class InboundReceiptTests {
     }
 
     @Test
+    void returnsAnEmptyHomeCandidateListBeforeAnyReceipts() throws Exception {
+        String batch = importBatch("HOME-EMPTY", List.of(line("0008100001", "东")));
+        String path = BATCHES + "/" + batch + "/home-staging";
+        try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou");
+             var foreign = login(port, "dispatcher-other"); var sorter = login(port, "sorter-test")) {
+            var detail = expect(200, operator.get(path));
+            assertEquals(batch, detail.path("batchId").asText());
+            assertTrue(detail.path("candidates").isArray());
+            assertEquals(0, detail.path("candidates").size());
+            assertEquals(detail, expect(200, dispatcher.get(path)));
+            assertEquals("INBOUND_BATCH_NOT_FOUND", expect(404, foreign.get(path)).path("code").asText());
+            expect(403, sorter.get(path));
+        }
+    }
+
+    @Test
+    void findsOnlyCurrentConfirmedHomeAgreementsForEligibleReceipts() throws Exception {
+        String eligible = "0008100011";
+        String pending = "0008100012";
+        String notReceived = "0008100013";
+        String quarantined = "0008100014";
+        String departed = "0008100015";
+        String unknown = "0008100016";
+        String pickup = "0008100017";
+        String superseded = "0008100018";
+        String inactiveArea = "0008100019";
+        String otherBatch = "0008100020";
+        String batch = importBatch("HOME-ELIGIBILITY", List.of(
+                line(eligible, "东"), line(pending, "未知"), line(notReceived, "东"), line(quarantined, "东"),
+                line(departed, "东"), line(unknown, "东"), line(pickup, "东"), line(superseded, "东"),
+                line(inactiveArea, "东")));
+        String another = importBatch("HOME-DIFFERENT-BATCH", List.of(line(otherBatch, "东")));
+        String path = BATCHES + "/" + batch + "/home-staging";
+        try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou");
+             var foreign = login(port, "dispatcher-other"); var sorter = login(port, "sorter-test")) {
+            var csrf = operator.csrf();
+            for (String waybill : List.of(eligible, pending, departed, unknown, pickup, superseded, inactiveArea)) {
+                expect(201, operator.post(scan(batch), body(waybill), csrf, "home-scan-" + waybill));
+            }
+            expect(201, operator.post(scan(another), body(otherBatch), csrf, "home-scan-" + otherBatch));
+            expect(200, operator.post(quarantine(batch),
+                    Map.of("kind", "DAMAGED", "waybillNo", quarantined, "note", "外箱破损"), csrf, "home-damage"));
+            String west = areaId("JIANGAN-DEMO", "WEST");
+            String east = areaId("JIANGAN-DEMO", "EAST");
+            for (String waybill : List.of(eligible, pending, notReceived, quarantined, departed, inactiveArea, otherBatch)) {
+                insertHomeAgreement(waybill, west);
+            }
+            insertHomeAgreement(superseded, east);
+            jdbc.sql("""
+                    UPDATE delivery_agreement SET superseded_at = '2026-11-26 08:10:00'
+                    WHERE parcel_id = :parcel
+                    """).param("parcel", parcelId(superseded)).update();
+            jdbc.sql("""
+                    INSERT INTO delivery_agreement
+                        (parcel_id, method, pickup_point_id, confirmation_source, confirmed_at)
+                    VALUES (:parcel, 'PICKUP', 1, 'SYNTHETIC', '2026-11-26 08:00:00')
+                    """).param("parcel", parcelId(pickup)).update();
+            jdbc.sql("""
+                    UPDATE parcel SET stage = 'OUT_FOR_DELIVERY', holder_kind = 'WORKER', holder_unit_id = NULL
+                    WHERE waybill_no = :waybill
+                    """).param("waybill", departed).update();
+            jdbc.sql("""
+                    INSERT INTO delivery_area (network_id, code, name, active)
+                    SELECT id, 'HOME-INACTIVE', '停用片区', FALSE FROM org_unit WHERE code = 'JIANGAN-DEMO'
+                    """).update();
+            jdbc.sql("UPDATE parcel SET address_area_id = :area WHERE waybill_no = :waybill")
+                    .param("area", areaId("JIANGAN-DEMO", "HOME-INACTIVE")).param("waybill", inactiveArea).update();
+
+            var candidates = expect(200, dispatcher.get(path)).path("candidates");
+            assertEquals(List.of(eligible),
+                    candidates.findValues("waybillNo").stream().map(value -> value.asText()).toList());
+            var candidate = candidates.get(0);
+            assertEquals(parcelId(eligible), candidate.path("parcelId").asText());
+            assertTrue(candidate.path("parcelId").isTextual());
+            assertTrue(candidate.path("parcelVersion").isTextual());
+            assertEquals(east, candidate.path("area").path("id").asText());
+            assertEquals("HOME", candidate.path("agreement").path("method").asText());
+            assertEquals("0", candidate.path("agreement").path("version").asText());
+            assertEquals("2026-11-26T08:00:00.123456+08:00", candidate.path("agreement").path("confirmedAt").asText());
+            assertEquals(jdbc.sql("SELECT id FROM delivery_agreement WHERE parcel_id = :parcel")
+                    .param("parcel", parcelId(eligible)).query(String.class).single(),
+                    candidate.path("agreement").path("id").asText());
+
+            expect(200, operator.post(assignment(parcelId(pending)), Map.of("areaId", west),
+                    csrf, "home-manual-" + pending));
+            var after = expect(200, operator.get(path)).path("candidates");
+            assertEquals(List.of(eligible, pending),
+                    after.findValues("waybillNo").stream().map(value -> value.asText()).toList());
+            assertEquals(west, after.get(1).path("area").path("id").asText());
+            assertEquals(jdbc.sql("SELECT version FROM parcel WHERE id = :parcel").param("parcel", parcelId(pending))
+                    .query(String.class).single(), after.get(1).path("parcelVersion").asText());
+            assertEquals("INBOUND_BATCH_NOT_FOUND", expect(404, foreign.get(path)).path("code").asText());
+            expect(403, sorter.get(path));
+        }
+    }
+
+    private void insertHomeAgreement(String waybill, String targetArea) {
+        jdbc.sql("""
+                INSERT INTO delivery_agreement
+                    (parcel_id, method, target_area_id, home_address, confirmation_source, confirmed_at)
+                VALUES (:parcel, 'HOME', :area, '合成上门地址 1 号', 'SYNTHETIC', '2026-11-26 08:00:00.123456')
+                """).param("parcel", parcelId(waybill)).param("area", targetArea).update();
+    }
+
+    @Test
     void registersDamageAndMissingLabelWithoutLeakingIntoPlanningOrCredits() throws Exception {
         String batch = importBatch("PLANNING-03-DEMO",
                 List.of(line("000726030001", "东"), line("000726030002", "东")));
