@@ -9,15 +9,14 @@ import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 
-import org.example.delivery.fulfillment.PlanningDemoReceipts;
-import org.example.delivery.fulfillment.PlanningDemoReceipts.ReceiptSnapshot;
+import org.example.delivery.fulfillment.HomeStagingCandidates;
+import org.example.delivery.fulfillment.HomeStagingCandidates.Candidate;
 import org.example.delivery.identity.EmployeePrincipal;
 import org.example.delivery.station.StationQueries;
 import org.example.delivery.station.StationQueries.Page;
 import org.example.delivery.station.StationQueries.StaffContext;
 import org.example.delivery.time.BeijingTime;
 import org.example.delivery.web.ApiProblems;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -26,17 +25,16 @@ import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 
 @Service
-@Profile("planning-demo")
 class DraftPlans {
     private final StationQueries station;
-    private final PlanningDemoReceipts receipts;
+    private final HomeStagingCandidates candidates;
     private final DraftPlanStore store;
     private final TransactionTemplate readSnapshot;
 
-    DraftPlans(StationQueries station, PlanningDemoReceipts receipts, DraftPlanStore store,
+    DraftPlans(StationQueries station, HomeStagingCandidates candidates, DraftPlanStore store,
                PlatformTransactionManager transactions) {
         this.station = station;
-        this.receipts = receipts;
+        this.candidates = candidates;
         this.store = store;
         this.readSnapshot = new TransactionTemplate(transactions);
         this.readSnapshot.setReadOnly(true);
@@ -102,7 +100,8 @@ class DraftPlans {
     }
 
     private Prepared prepare(EmployeePrincipal employee, long batchId, long shiftId, OffsetDateTime at) {
-        var parcels = receipts.confirmedHomeReceipts(employee, batchId);
+        var parcels = new ArrayList<>(candidates.find(employee, batchId));
+        parcels.addAll(candidates.findPendingArea(employee, batchId));
         var scope = new StaffContext(employee.unitId(), employee.role());
         var instant = at.toInstant();
         var selectedShift = station.shiftAt(scope, shiftId, instant)
@@ -118,12 +117,13 @@ class DraftPlans {
                                 area.regularWorker().id(), area.regularWorker().displayName()))));
         var home = new DraftGenerator.Agreement(DraftGenerator.Method.HOME, null, null);
         var draft = new DraftGenerator().generate(areas, parcels.stream().map(parcel ->
-                new DraftGenerator.Parcel(parcel.waybillNo(), DraftGenerator.State.AVAILABLE, parcel.addressAreaId(), home))
+                new DraftGenerator.Parcel(parcel.waybillNo(), DraftGenerator.State.AVAILABLE,
+                        parcel.area() == null ? null : parcel.area().id(), home))
                 .toList(), shift, instant);
         if (draft.total() == 0) {
-            throw new ApiProblems.Failure(HttpStatus.CONFLICT, "NO_DRAFT_ITEMS", "该批次暂无已实收的草案样例件。");
+            throw new ApiProblems.Failure(HttpStatus.CONFLICT, "NO_DRAFT_ITEMS", "该批次暂无可纳入配送草案的在站上门件。");
         }
-        var byWaybill = parcels.stream().collect(Collectors.toMap(ReceiptSnapshot::waybillNo, Function.identity()));
+        var byWaybill = parcels.stream().collect(Collectors.toMap(Candidate::waybillNo, Function.identity()));
         var lines = draft.groups().stream().flatMap(group -> group.items().stream().map(item ->
                 new Line(byWaybill.get(item.waybillNo()), group.area(), item))).toList();
         return new Prepared(batchId, shiftId, BeijingTime.fromDatabase(BeijingTime.forDatabase(instant)), lines);
@@ -180,5 +180,5 @@ class DraftPlans {
                        JsonNode reason) {}
     record CreateDraft(JsonNode batchId, JsonNode shiftId, OffsetDateTime at) {}
     record Prepared(long batchId, long shiftId, OffsetDateTime evaluatedAt, List<Line> lines) {}
-    record Line(ReceiptSnapshot receipt, DraftGenerator.Area area, DraftGenerator.Item item) {}
+    record Line(Candidate candidate, DraftGenerator.Area area, DraftGenerator.Item item) {}
 }

@@ -32,7 +32,7 @@ const batches = ref<Batch[]>([])
 const shifts = ref<Shift[]>([])
 const batchId = ref('')
 const shiftId = ref('')
-const at = ref('2026-11-25T08:00')
+const at = ref(time.toInput(new Date().toISOString()))
 const queriedAt = ref('')
 const reopenId = ref('')
 const draft = ref<Draft | null>(null)
@@ -93,8 +93,7 @@ onMounted(() => run(async () => {
     throw new Error('请返回员工入口，使用已改密的网点调度账号登录。')
   }
   verified.value = true
-  batches.value = (await requestJson<Batch[]>('/staff/inbound-batches'))
-    .filter(batch => batch.sourceBatchNo === 'PLANNING-03-DEMO')
+  batches.value = await requestJson<Batch[]>('/staff/inbound-batches')
   batchId.value = batches.value[0]?.id ?? ''
   ready.value = true
   await queryShifts()
@@ -102,6 +101,7 @@ onMounted(() => run(async () => {
 
 function createDraft() {
   return run(async () => {
+    draft.value = null
     const saved = await postJson<Draft>('/staff/delivery-plans', {
       batchId: batchId.value, shiftId: shiftId.value, at: queriedAt.value,
     })
@@ -182,14 +182,14 @@ function submitAdjustment(action: { workerId: string } | { action: 'HOLD' }) {
 <template>
   <main>
     <header>
-      <h1>配送草案验收</h1>
+      <h1>配送草案</h1>
       <a href="/">员工入口</a>
     </header>
     <p v-if="status" role="status">{{ status }}</p>
     <p v-if="error" role="alert">{{ error }}</p>
     <section v-if="ready" aria-labelledby="create-title">
       <h2 id="create-title">保存草案</h2>
-      <p v-if="!batches.length">当前网点没有 PLANNING-03-DEMO 样例批次。</p>
+      <p v-if="!batches.length">当前网点暂无入站批次。</p>
       <form @submit.prevent="createDraft">
         <label>入站批次
           <select v-model="batchId" :disabled="busy" required>
@@ -210,6 +210,7 @@ function submitAdjustment(action: { workerId: string } | { action: 'HOLD' }) {
           </select>
         </label>
         <button type="submit" :disabled="busy || !batchId || !shiftId || !queriedAt">生成并保存</button>
+        <p v-if="queriedAt && !shifts.length">该北京时间暂无有效班次。</p>
       </form>
     </section>
     <section v-if="verified" aria-labelledby="reopen-title">

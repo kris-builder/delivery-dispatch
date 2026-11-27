@@ -10,6 +10,14 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [vue()],
+    build: {
+      rolldownOptions: {
+        input: {
+          main: fileURLToPath(new URL('./index.html', import.meta.url)),
+          planning: fileURLToPath(new URL('./planning-draft.html', import.meta.url)),
+        },
+      },
+    },
     server: {
       host: '127.0.0.1',
       port: 5173,

@@ -5,7 +5,6 @@ import java.time.Instant;
 
 import org.example.delivery.identity.EmployeePrincipal;
 import org.example.delivery.station.StationQueries;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,7 +18,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(DraftPlanController.PATH)
-@Profile("planning-demo")
 class DraftPlanController {
     static final String PATH = "/api/v1/staff/delivery-plans";
     private final DraftPlans drafts;

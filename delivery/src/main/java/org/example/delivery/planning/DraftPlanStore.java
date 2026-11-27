@@ -12,7 +12,6 @@ import org.example.delivery.identity.EmployeePrincipal;
 import org.example.delivery.station.StationQueries;
 import org.example.delivery.time.BeijingTime;
 import org.example.delivery.web.ApiProblems;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -20,7 +19,6 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 @Repository
-@Profile("planning-demo")
 class DraftPlanStore {
     private static final String HOLD_REASON = "DISPATCHER_HOLD";
 
@@ -122,16 +120,21 @@ class DraftPlanStore {
         var worker = line.item().proposedWorker();
         var area = line.area();
         var reason = line.item().pendingReason();
+        var candidate = line.candidate();
         int inserted = jdbc.sql("""
                 INSERT INTO plan_item (plan_id, parcel_id, target_area_id, target_area_name,
                                       proposed_worker_id, proposed_worker_name, parcel_version, reason_code)
                 SELECT :plan, p.id, :areaId, :areaName, :workerId, :workerName, p.version, :reason
                 FROM parcel p JOIN inbound_receipt r ON r.parcel_id = p.id
+                JOIN delivery_agreement a ON a.active_parcel_id = p.id AND a.id = :agreementId
+                                         AND a.version = :agreementVersion
                 WHERE p.id = :parcel AND p.version = :version AND p.network_id = :unit
                   AND r.batch_id = :batch AND r.voided_at IS NULL
                   AND p.stage = 'IN_STATION' AND p.holder_kind = 'NETWORK' AND p.holder_unit_id = :unit
-                """).param("plan", plan).param("parcel", line.receipt().parcelId())
-                .param("version", line.receipt().version()).param("unit", network).param("batch", batch)
+                """).param("plan", plan).param("parcel", candidate.parcelId())
+                .param("version", candidate.parcelVersion()).param("unit", network).param("batch", batch)
+                .param("agreementId", Long.valueOf(candidate.agreement().id()))
+                .param("agreementVersion", Long.valueOf(candidate.agreement().version()))
                 .param("areaId", area == null ? null : Long.valueOf(area.id()))
                 .param("areaName", area == null ? null : area.name())
                 .param("workerId", worker == null ? null : Long.valueOf(worker.id()))
@@ -139,7 +142,7 @@ class DraftPlanStore {
                 .param("reason", reason == null ? null : reason.name()).update();
         if (inserted != 1) {
             throw new ApiProblems.Failure(HttpStatus.CONFLICT, "DRAFT_PARCEL_CHANGED",
-                    "运单 " + line.receipt().waybillNo() + " 的在站状态或版本已变化，请重新生成。");
+                    "运单 " + candidate.waybillNo() + " 的在站状态、版本或配送约定已变化，请重新生成。");
         }
     }
 

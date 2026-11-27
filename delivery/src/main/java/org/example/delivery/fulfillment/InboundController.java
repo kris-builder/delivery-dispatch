@@ -28,10 +28,11 @@ class InboundController {
     private final SortCredits sortCredits;
     private final InboundQuarantines quarantines;
     private final InboundQuarantineReviews quarantineReviews;
+    private final HomeStagingCandidates homeCandidates;
 
     InboundController(InboundBatches batches, InboundReceipts receipts, WaybillLookup waybills,
                       AreaAssignments assignments, SortCredits sortCredits, InboundQuarantines quarantines,
-                      InboundQuarantineReviews quarantineReviews) {
+                      InboundQuarantineReviews quarantineReviews, HomeStagingCandidates homeCandidates) {
         this.batches = batches;
         this.receipts = receipts;
         this.waybills = waybills;
@@ -39,6 +40,7 @@ class InboundController {
         this.sortCredits = sortCredits;
         this.quarantines = quarantines;
         this.quarantineReviews = quarantineReviews;
+        this.homeCandidates = homeCandidates;
     }
 
     @PostMapping("/staff/inbound-batches")
@@ -58,6 +60,11 @@ class InboundController {
     @GetMapping("/staff/inbound-batches/{batchId}")
     InboundBatches.BatchDetail detail(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable long batchId) {
         return batches.detail(employee, batchId);
+    }
+
+    @GetMapping("/staff/inbound-batches/{batchId}/home-staging")
+    HomeStagingDetail homeStaging(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable long batchId) {
+        return new HomeStagingDetail(Long.toString(batchId), homeCandidates.find(employee, batchId));
     }
 
     @PostMapping("/staff/inbound-batches/{batchId}/receipts")
@@ -123,6 +130,7 @@ class InboundController {
         return sortCredits.findMine(employee, date);
     }
 
+    record HomeStagingDetail(String batchId, List<HomeStagingCandidates.Candidate> candidates) {}
     record AssignmentInput(long areaId) {}
     record ScanInput(JsonNode waybillNo) {}
 }
