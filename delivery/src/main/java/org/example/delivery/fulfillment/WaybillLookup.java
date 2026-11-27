@@ -27,7 +27,7 @@ class WaybillLookup {
     public Result find(EmployeePrincipal employee, String waybill) {
         InboundBatches.requireNetworkStaff(employee, false);
         var parcel = jdbc.sql("""
-                SELECT p.id, p.waybill_no, p.address_area_id, p.address_area_name, p.pending_area_reason,
+                SELECT p.id, p.waybill_no, p.address_area_id, p.address_area_name, p.pending_area_reason, p.stage,
                        r.received_at, b.id AS batch_id, b.source_batch_no
                 FROM parcel p
                 LEFT JOIN inbound_receipt r ON r.active_parcel_id = p.id
@@ -40,6 +40,7 @@ class WaybillLookup {
                     String areaId = row.getString("address_area_id");
                     String reason = row.getString("pending_area_reason");
                     return new Parcel(row.getLong("id"), row.getString("waybill_no"),
+                            "QUARANTINED".equals(row.getString("stage")),
                             received == null ? null : BeijingTime.fromDatabase(received),
                             batchId == null ? null : new Batch(batchId, row.getString("source_batch_no")),
                             received == null || areaId == null ? null : new ReceiptArea(areaId, row.getString("address_area_name")),
@@ -59,14 +60,15 @@ class WaybillLookup {
                 """).param("parcel", parcel.id()).param("unit", employee.unitId())
                 .query((row, index) -> new Event(row.getString("event_type"),
                         BeijingTime.fromDatabase(row.getObject("occurred_at", LocalDateTime.class)))).list();
-        Status status = parcel.firstReceivedAt() == null ? Status.EXPECTED
+        Status status = parcel.quarantined() ? Status.QUARANTINED
+                : parcel.firstReceivedAt() == null ? Status.EXPECTED
                 : parcel.area() == null ? Status.PENDING_AREA : Status.RECEIVED;
         return new Result(parcel.waybillNo(), status, parcel.firstReceivedAt(), parcel.receivedBatch(),
                 parcel.area(), parcel.pendingAreaReason(), expected, events);
     }
 
-    enum Status { EXPECTED, PENDING_AREA, RECEIVED }
-    private record Parcel(long id, String waybillNo, OffsetDateTime firstReceivedAt, Batch receivedBatch,
+    enum Status { EXPECTED, PENDING_AREA, RECEIVED, QUARANTINED }
+    private record Parcel(long id, String waybillNo, boolean quarantined, OffsetDateTime firstReceivedAt, Batch receivedBatch,
                           ReceiptArea area, PendingReason pendingAreaReason) {}
     record Batch(String id, String sourceBatchNo) {}
     record Event(String type, OffsetDateTime occurredAt) {}

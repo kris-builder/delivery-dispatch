@@ -26,14 +26,16 @@ class InboundController {
     private final WaybillLookup waybills;
     private final AreaAssignments assignments;
     private final SortCredits sortCredits;
+    private final InboundQuarantines quarantines;
 
     InboundController(InboundBatches batches, InboundReceipts receipts, WaybillLookup waybills,
-                      AreaAssignments assignments, SortCredits sortCredits) {
+                      AreaAssignments assignments, SortCredits sortCredits, InboundQuarantines quarantines) {
         this.batches = batches;
         this.receipts = receipts;
         this.waybills = waybills;
         this.assignments = assignments;
         this.sortCredits = sortCredits;
+        this.quarantines = quarantines;
     }
 
     @PostMapping("/staff/inbound-batches")
@@ -70,6 +72,14 @@ class InboundController {
     @GetMapping("/staff/inbound-receipts/{receiptId}")
     InboundReceipts.Receipt receipt(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable long receiptId) {
         return receipts.receipt(employee, receiptId);
+    }
+
+    @PostMapping("/staff/inbound-batches/{batchId}/quarantines")
+    InboundQuarantines.Quarantine registerQuarantine(@AuthenticationPrincipal EmployeePrincipal employee,
+                                                     @PathVariable long batchId,
+                                                     @RequestBody InboundQuarantines.Input input,
+                                                     @RequestHeader("Idempotency-Key") String key) {
+        return quarantines.register(employee, batchId, input, key);
     }
 
     @GetMapping("/operations/INBOUND_RECEIPT/{key}")
