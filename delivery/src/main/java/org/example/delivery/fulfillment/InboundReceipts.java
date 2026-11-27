@@ -138,6 +138,11 @@ class InboundReceipts {
 
     Receipt createReceipt(EmployeePrincipal employee, long batch, long parcel, String waybill, long operation,
                           LocalDateTime now, boolean damaged) {
+        return createReceipt(employee, batch, parcel, waybill, operation, now, damaged, employee.accountId());
+    }
+
+    Receipt createReceipt(EmployeePrincipal employee, long batch, long parcel, String waybill, long operation,
+                          LocalDateTime now, boolean damaged, long creditedEmployee) {
         ExpectedAddress expected = jdbc.sql("""
                 SELECT recipient_phone, street, community, address FROM inbound_expected
                 WHERE batch_id = :batch AND parcel_id = :parcel
@@ -169,7 +174,7 @@ class InboundReceipts {
                 .update(receiptKey, "id");
         long receipt = Objects.requireNonNull(receiptKey.getKey()).longValue();
         if (areaId != null) {
-            insertSortCredit(employee, receipt, event, now);
+            insertSortCredit(employee.unitId(), creditedEmployee, receipt, event, now);
         }
         String status = damaged ? "QUARANTINED" : areaId == null ? "PENDING_AREA" : "RECEIVED";
         return new Receipt(status, Long.toString(receipt), Long.toString(batch),
@@ -203,10 +208,14 @@ class InboundReceipts {
     }
 
     void insertSortCredit(EmployeePrincipal employee, long receipt, long event, LocalDateTime now) {
+        insertSortCredit(employee.unitId(), employee.accountId(), receipt, event, now);
+    }
+
+    private void insertSortCredit(long unit, long employee, long receipt, long event, LocalDateTime now) {
         jdbc.sql("""
                 INSERT INTO sort_credit (receipt_id, unit_id, employee_id, source_event_id, credited_at)
                 VALUES (:receipt, :unit, :employee, :event, :now)
-                """).param("receipt", receipt).param("unit", employee.unitId()).param("employee", employee.accountId())
+                """).param("receipt", receipt).param("unit", unit).param("employee", employee)
                 .param("event", event).param("now", now).update();
     }
 

@@ -40,7 +40,7 @@ class WaybillLookup {
                     String areaId = row.getString("address_area_id");
                     String reason = row.getString("pending_area_reason");
                     return new Parcel(row.getLong("id"), row.getString("waybill_no"),
-                            "QUARANTINED".equals(row.getString("stage")),
+                            row.getString("stage"),
                             received == null ? null : BeijingTime.fromDatabase(received),
                             batchId == null ? null : new Batch(batchId, row.getString("source_batch_no")),
                             received == null || areaId == null ? null : new ReceiptArea(areaId, row.getString("address_area_name")),
@@ -60,15 +60,18 @@ class WaybillLookup {
                 """).param("parcel", parcel.id()).param("unit", employee.unitId())
                 .query((row, index) -> new Event(row.getString("event_type"),
                         BeijingTime.fromDatabase(row.getObject("occurred_at", LocalDateTime.class)))).list();
-        Status status = parcel.quarantined() ? Status.QUARANTINED
-                : parcel.firstReceivedAt() == null ? Status.EXPECTED
-                : parcel.area() == null ? Status.PENDING_AREA : Status.RECEIVED;
+        Status status = switch (parcel.stage()) {
+            case "QUARANTINED" -> Status.QUARANTINED;
+            case "RETURNED_UPSTREAM" -> Status.RETURNED_UPSTREAM;
+            default -> parcel.firstReceivedAt() == null ? Status.EXPECTED
+                    : parcel.area() == null ? Status.PENDING_AREA : Status.RECEIVED;
+        };
         return new Result(parcel.waybillNo(), status, parcel.firstReceivedAt(), parcel.receivedBatch(),
                 parcel.area(), parcel.pendingAreaReason(), expected, events);
     }
 
-    enum Status { EXPECTED, PENDING_AREA, RECEIVED, QUARANTINED }
-    private record Parcel(long id, String waybillNo, boolean quarantined, OffsetDateTime firstReceivedAt, Batch receivedBatch,
+    enum Status { EXPECTED, PENDING_AREA, RECEIVED, QUARANTINED, RETURNED_UPSTREAM }
+    private record Parcel(long id, String waybillNo, String stage, OffsetDateTime firstReceivedAt, Batch receivedBatch,
                           ReceiptArea area, PendingReason pendingAreaReason) {}
     record Batch(String id, String sourceBatchNo) {}
     record Event(String type, OffsetDateTime occurredAt) {}

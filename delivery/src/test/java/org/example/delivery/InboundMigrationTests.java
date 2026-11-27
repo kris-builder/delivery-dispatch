@@ -56,13 +56,24 @@ class InboundMigrationTests {
                 FROM inbound_receipt r JOIN sort_credit c ON c.receipt_id = r.id JOIN parcel p ON p.id = r.parcel_id
                 WHERE r.id = 9001
                 """).query(String.class).single();
-        Flyway.configure().dataSource(dataSource).load().migrate();
+        Flyway.configure().dataSource(dataSource).target("11").load().migrate();
         assertEquals(priorReceipt, jdbc.sql("""
                 SELECT CONCAT(r.received_at, '|', c.credited_at, '|', c.employee_id, '|', p.stage)
                 FROM inbound_receipt r JOIN sort_credit c ON c.receipt_id = r.id JOIN parcel p ON p.id = r.parcel_id
                 WHERE r.id = 9001
                 """).query(String.class).single());
         assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM inbound_quarantine").query(Integer.class).single());
+        jdbc.sql("""
+                INSERT INTO inbound_quarantine (batch_id, temporary_no, kind, note, reported_by, reported_at, operation_receipt_id)
+                SELECT batch_id, 'IN-LEGACY', 'MISSING_LABEL', '面单模糊', received_by, received_at, 9001
+                FROM inbound_receipt WHERE id = 9001
+                """).update();
+        Flyway.configure().dataSource(dataSource).load().migrate();
+        assertEquals(1, jdbc.sql("""
+                SELECT COUNT(*) FROM inbound_quarantine WHERE temporary_no = 'IN-LEGACY'
+                  AND status = 'UPSTREAM_REVIEW' AND reported_at = '2026-11-26 00:30:00.123456'
+                """).query(Integer.class).single());
+        assertEquals(0, jdbc.sql("SELECT COUNT(*) FROM inbound_quarantine_review").query(Integer.class).single());
         assertEquals(operatorId, jdbc.sql("SELECT imported_by FROM inbound_batch WHERE source_batch_no = 'V6-DEMO'")
                 .query(Long.class).single());
         assertEquals(1, jdbc.sql("SELECT COUNT(*) FROM area_duty WHERE area_id = :area")

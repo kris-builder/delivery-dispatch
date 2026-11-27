@@ -54,7 +54,7 @@ class InboundReceiptTests {
 
     @BeforeAll
     void activateAccounts() throws Exception {
-        for (String account : List.of("dispatcher-zhou", "operator-xu")) {
+        for (String account : List.of("dispatcher-zhou", "dispatcher-other", "operator-xu")) {
             activate(port, account);
         }
         try (var dispatcher = login(port, "dispatcher-zhou")) {
@@ -220,6 +220,134 @@ class InboundReceiptTests {
             assertEquals(1, countForBatch("parcel_event", batch));
             assertEquals(1, expect(200, operator.get(BATCHES + "/" + batch)).path("quarantines").size());
         }
+    }
+
+    @Test
+    void verifiesUnlistedReceiptAndReturnsWrongShipmentWithoutDoubleCounting() throws Exception {
+        String originBatch = importBatch("REVIEW-FOUND", List.of(line("00098001", "东")));
+        String verifiedBatch = importBatch("REVIEW-CORRECTED", List.of(line("00098002", "东")));
+        try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou");
+             var foreign = login(port, "dispatcher-other"); var threads = Executors.newFixedThreadPool(2)) {
+            var q = reportUnlisted(operator, originBatch, "00098003");
+            String action = review(originBatch, q.path("id").asText());
+            var confirmed = Map.of("decision", "RELEASE", "targetBatchId", verifiedBatch, "identityConfirmed", true,
+                    "evidence", "上游确认归属和实物", "verifiedAt", "2026-11-27T08:00:00+08:00",
+                    "street", "测试街道", "community", "东");
+            expect(403, operator.post(action, confirmed, operator.csrf(), "operator-review"));
+            expect(404, foreign.post(action, confirmed, foreign.csrf(), "foreign-review"));
+            var csrf = dispatcher.csrf();
+            var go = new CountDownLatch(1);
+            var first = threads.submit(() -> {
+                go.await();
+                return dispatcher.post(action, confirmed, csrf, "verify-unlisted-first");
+            });
+            var second = threads.submit(() -> {
+                go.await();
+                return dispatcher.post(action, confirmed, csrf, "verify-unlisted-other-key");
+            });
+            go.countDown();
+            var released = expect(200, first.get(15, TimeUnit.SECONDS));
+            assertEquals(released, expect(200, second.get(15, TimeUnit.SECONDS)));
+            assertEquals(released, expect(200, dispatcher.post(action, confirmed, csrf, "verify-unlisted-first")));
+            assertEquals("RELEASED", released.path("status").asText());
+            assertEquals("00098003", released.path("waybillNo").asText());
+            assertEquals("上游确认归属和实物", released.path("evidence").asText());
+            assertEquals(verifiedBatch, released.path("targetBatchId").asText());
+            assertEquals(OffsetDateTime.parse("2026-11-27T08:00:00+08:00"),
+                    OffsetDateTime.parse(released.path("verifiedAt").asText()));
+            assertEquals(LocalDateTime.parse("2026-11-27T08:00:00"), jdbc.sql("""
+                    SELECT verified_at FROM inbound_quarantine_review WHERE quarantine_id = :id
+                    """).param("id", q.path("id").asText()).query((row, i) -> row.getObject(1, LocalDateTime.class)).single());
+            var original = expect(200, dispatcher.get(BATCHES + "/" + originBatch));
+            assertEquals(q.path("reportedBy"), original.path("quarantines").get(0).path("reportedBy"));
+            assertEquals(released, original.path("quarantineReviews").get(0));
+            assertEquals(0, original.path("receivedCount").asInt());
+            assertEquals("ALREADY_RECEIVED", expect(200, operator.post(scan(verifiedBatch), body("00098003"),
+                    operator.csrf(), "review-unlisted-rescan")).path("status").asText());
+            var target = expect(200, operator.get(BATCHES + "/" + verifiedBatch));
+            assertEquals(2, target.path("expectedCount").asInt());
+            assertEquals(1, target.path("receivedCount").asInt());
+            assertEquals(1, target.path("sortCreditCount").asInt());
+            assertEquals(q.path("reportedBy").asText(), jdbc.sql("""
+                    SELECT c.employee_id FROM sort_credit c WHERE c.receipt_id = :receipt
+                    """).param("receipt", released.path("receiptId").asText()).query(String.class).single());
+            var wrong = reportUnlisted(operator, originBatch, "00098004");
+            var returned = expect(200, dispatcher.post(review(originBatch, wrong.path("id").asText()),
+                    Map.of("decision", "RETURN", "evidence", "核实错发并交回承运方"), csrf, "review-return"));
+            assertEquals("RETURNED", returned.path("status").asText());
+            assertEquals(expect(200, dispatcher.get("/auth/session")).path("employeeId"), returned.path("reviewedBy"));
+            assertEquals("RETURNED_UPSTREAM", expect(200, operator.get(lookup("00098004"))).path("status").asText());
+            var afterReturn = expect(200, dispatcher.get(BATCHES + "/" + originBatch));
+            assertEquals(0, afterReturn.path("receivedCount").asInt());
+            assertEquals(0, afterReturn.path("sortCreditCount").asInt());
+        }
+    }
+
+    @Test
+    void linksMissingLabelOnlyAfterIdentityCheckAndKeepsOtherHoldsIntact() throws Exception {
+        String batch = importBatch("REVIEW-LABEL", List.of(line("00098101", "东"), line("00098102", "东")));
+        try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou")) {
+            var csrf = dispatcher.csrf();
+            var temp = expect(200, operator.post(quarantine(batch), Map.of("kind", "MISSING_LABEL", "note", "面单不清"),
+                    operator.csrf(), "review-missing-label"));
+            expect(200, operator.post(quarantine(batch), Map.of("kind", "DAMAGED", "note", "箱体破损", "waybillNo", "00098102"),
+                    operator.csrf(), "review-other-hold"));
+            String path = review(batch, temp.path("id").asText());
+            expect(400, dispatcher.post(path, Map.of("decision", "RELEASE", "evidence", "未核实实物",
+                    "targetBatchId", batch, "waybillNo", "00098101"), csrf, "review-no-identity"));
+            assertEquals("INBOUND_REVIEW_BLOCKED", expect(409, dispatcher.post(path, Map.of("decision", "RELEASE",
+                    "identityConfirmed", true, "evidence", "另有破损拦截", "targetBatchId", batch, "waybillNo", "00098102"),
+                    csrf, "review-damage-blocked")).path("code").asText());
+            var payload = Map.of("decision", "RELEASE", "identityConfirmed", true, "evidence", "核验外箱与上游照片相符",
+                    "targetBatchId", batch, "waybillNo", "00098101");
+            var result = expect(200, dispatcher.post(path, payload, csrf, "review-associated"));
+            assertEquals(result, expect(200, dispatcher.post(path, payload, csrf, "review-associated-again")));
+            assertEquals("00098101", result.path("waybillNo").asText());
+            assertEquals(temp.path("temporaryNo"), result.path("temporaryNo"));
+            assertEquals(2, expect(200, operator.get(BATCHES + "/" + batch)).path("receivedCount").asInt());
+            var another = expect(200, operator.post(quarantine(batch), Map.of("kind", "MISSING_LABEL", "note", "另一实物"),
+                    operator.csrf(), "review-another-physical-piece"));
+            expect(409, dispatcher.post(review(batch, another.path("id").asText()), payload, csrf, "review-identity-duplicate"));
+            assertEquals(2, countForBatch("inbound_receipt", batch));
+            assertEquals(1, countForBatch("sort_credit", batch));
+        }
+    }
+
+    @Test
+    void rollsBackExpectedCorrectionAndReceiptWhenReviewInsertFails() throws Exception {
+        String batch = importBatch("REVIEW-ROLLBACK", List.of(line("00098201", "东")));
+        try (var operator = login(port, "operator-xu"); var dispatcher = login(port, "dispatcher-zhou")) {
+            var q = reportUnlisted(operator, batch, "00098202");
+            String path = review(batch, q.path("id").asText());
+            var input = Map.of("decision", "RELEASE", "identityConfirmed", true, "evidence", "故障注入",
+                    "targetBatchId", batch, "street", "测试街道", "community", "东");
+            var csrf = dispatcher.csrf();
+            jdbc.sql("ALTER TABLE inbound_quarantine_review ADD CONSTRAINT fail_review CHECK (evidence <> '故障注入')").update();
+            try {
+                expect(500, dispatcher.post(path, input, csrf, "review-fault"));
+                var after = expect(200, operator.get(BATCHES + "/" + batch));
+                assertEquals(1, after.path("expectedCount").asInt());
+                assertEquals(0, after.path("receivedCount").asInt());
+                assertEquals(0, after.path("sortCreditCount").asInt());
+                assertEquals("UPSTREAM_REVIEW", after.path("quarantines").get(0).path("status").asText());
+                assertTrue(after.path("quarantineReviews").isEmpty());
+                assertEquals(0, countForBatch("parcel_event", batch));
+            } finally {
+                jdbc.sql("ALTER TABLE inbound_quarantine_review DROP CHECK fail_review").update();
+            }
+            expect(200, dispatcher.post(path, input, csrf, "review-fault"));
+            assertEquals(1, countForBatch("inbound_receipt", batch));
+        }
+    }
+
+    private static tools.jackson.databind.JsonNode reportUnlisted(AuthHttpClient operator, String batch, String no)
+            throws Exception {
+        return expect(200, operator.post(quarantine(batch),
+                Map.of("kind", "UNLISTED", "waybillNo", no, "physicalConfirmed", true), operator.csrf(), "report-" + no));
+    }
+
+    private static String review(String batch, String id) {
+        return quarantine(batch) + "/" + id + "/reviews";
     }
 
     private static String quarantine(String batch) {

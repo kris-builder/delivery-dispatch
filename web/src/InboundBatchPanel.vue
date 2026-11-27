@@ -4,6 +4,7 @@ import { ApiError, postJson, requestJson } from './api'
 import { pendingAreaReasons, type PendingAreaReason } from './inboundAreaReasons'
 import AreaAssignmentPanel from './AreaAssignmentPanel.vue'
 import SortCreditsPanel from './SortCreditsPanel.vue'
+import QuarantineReviewPanel from './QuarantineReviewPanel.vue'
 import { createStationTime } from './stationTime'
 import demo from '../../fixtures/mvp.json'
 
@@ -20,6 +21,7 @@ interface BatchDetail extends BatchSummary {
   sortCreditCount: number
   expected: { waybillNo: string; street: string | null; community: string | null }[]
   quarantines: Quarantine[]
+  quarantineReviews: QuarantineReview[]
 }
 
 interface Receipt {
@@ -46,6 +48,15 @@ interface Quarantine {
   evidenceRef: string | null
   reportedBy: string
   reportedAt: string
+  status: 'UPSTREAM_REVIEW' | 'RELEASED' | 'RETURNED'
+}
+interface QuarantineReview {
+  quarantineId: string
+  waybillNo: string | null
+  targetBatchId: string | null
+  evidence: string
+  verifiedAt: string
+  reviewedBy: string
 }
 interface QuarantineDraft {
   kind: QuarantineKind
@@ -78,7 +89,15 @@ const quarantineAttempt = ref<{ key: string; body: Omit<QuarantineDraft, 'waybil
 const quarantineSaving = ref(false)
 const quarantineMessage = ref('')
 const quarantineError = ref('')
-const batchLocked = computed(() => scanning.value || sending.value || queue.value.length > 0 || !!quarantineDraft.value)
+const reviewing = ref<Quarantine | null>(null)
+const batchLocked = computed(() =>
+  scanning.value || sending.value || queue.value.length > 0 || !!quarantineDraft.value || !!reviewing.value,
+)
+const quarantineStatuses = { UPSTREAM_REVIEW: '上游交接待核', RELEASED: '已核对放行', RETURNED: '已交回上游' }
+const quarantineRows = computed(() => {
+  const reviews = new Map(detail.value?.quarantineReviews.map(review => [review.quarantineId, review]))
+  return (detail.value?.quarantines ?? []).map(item => ({ ...item, review: reviews.get(item.id) }))
+})
 const quarantineCounts = computed(() => {
   const counts = { DAMAGED: 0, MISSING_LABEL: 0, UNLISTED: 0 }
   for (const item of detail.value?.quarantines ?? []) counts[item.kind]++
@@ -229,6 +248,11 @@ function refreshAfterAssignment() {
   return run(loadBatches)
 }
 
+function refreshAfterReview() {
+  reviewing.value = null
+  return run(loadBatches)
+}
+
 function switchBatch() {
   stopScanning()
   void nextTick(() => batchSelect.value?.focus())
@@ -358,12 +382,34 @@ async function saveQuarantine() {
         <p>{{ quarantineNames.DAMAGED }} {{ quarantineCounts.DAMAGED }} · {{ quarantineNames.MISSING_LABEL }}
           {{ quarantineCounts.MISSING_LABEL }} · {{ quarantineNames.UNLISTED }} {{ quarantineCounts.UNLISTED }}</p>
         <ul class="quarantine-lines">
-          <li v-for="item in detail.quarantines" :key="item.id">
-            <p><code>{{ item.waybillNo ?? item.temporaryNo }}</code> · {{ quarantineNames[item.kind] }} · 上游交接待核</p>
+          <li v-for="item in quarantineRows" :key="item.id">
+            <p><code>{{ item.waybillNo ?? item.temporaryNo }}</code> · {{ quarantineNames[item.kind] }}
+              · {{ quarantineStatuses[item.status] }}</p>
             <p v-if="item.note || item.evidenceRef">
               {{ item.note }}<template v-if="item.evidenceRef">{{ item.note ? ' · ' : '' }}凭证 {{ item.evidenceRef }}</template>
             </p>
             <p><time :datetime="item.reportedAt">{{ stationTime.format(item.reportedAt) }}</time> · 员工编号 {{ item.reportedBy }}</p>
+            <template v-if="item.review">
+              <p v-if="item.review.waybillNo">核实运单 <code>{{ item.review.waybillNo }}</code></p>
+              <p v-if="item.review.targetBatchId">
+                核实批次 {{ batches.find(batch => batch.id === item.review?.targetBatchId)?.sourceBatchNo }}
+              </p>
+              <p>核实依据 · {{ item.review.evidence }}</p>
+              <p>核实时间 <time :datetime="item.review.verifiedAt">{{ stationTime.format(item.review.verifiedAt) }}</time>
+                · 调度编号 {{ item.review.reviewedBy }}</p>
+            </template>
+            <button v-else-if="dispatcher && item.kind !== 'DAMAGED' && item.status === 'UPSTREAM_REVIEW'"
+                    type="button" :disabled="!!reviewing || loading" @click="reviewing = item">核对处理</button>
+            <QuarantineReviewPanel
+              v-if="reviewing?.id === item.id && item.kind !== 'DAMAGED'"
+              :batch-id="detail.id"
+              :quarantine-id="item.id"
+              :missing-label="item.kind === 'MISSING_LABEL'"
+              :batches="batches"
+              @cancel="reviewing = null"
+              @reviewed="refreshAfterReview"
+              @session-expired="emit('sessionExpired')"
+            />
           </li>
         </ul>
       </details>

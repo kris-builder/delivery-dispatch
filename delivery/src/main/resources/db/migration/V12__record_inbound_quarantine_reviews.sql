@@ -1,0 +1,20 @@
+CREATE TABLE inbound_quarantine_review (
+    quarantine_id BIGINT NOT NULL PRIMARY KEY,
+    operation_receipt_id BIGINT NOT NULL,
+    status VARCHAR(24) NOT NULL,
+    parcel_id BIGINT,
+    receipt_id BIGINT,
+    target_batch_id BIGINT,
+    waybill_no VARCHAR(64) COLLATE utf8mb4_0900_bin,
+    evidence VARCHAR(500) NOT NULL,
+    verified_at DATETIME(6) NOT NULL,
+    reviewed_at DATETIME(6) NOT NULL,
+    reviewed_by BIGINT NOT NULL,
+    CONSTRAINT uq_quarantine_review_operation UNIQUE (operation_receipt_id),
+    CONSTRAINT fk_quarantine_review_case FOREIGN KEY (quarantine_id) REFERENCES inbound_quarantine (id),
+    CONSTRAINT fk_quarantine_review_operation FOREIGN KEY (operation_receipt_id) REFERENCES operation_receipt (id),
+    CONSTRAINT fk_quarantine_review_parcel FOREIGN KEY (parcel_id) REFERENCES parcel (id),
+    CONSTRAINT fk_quarantine_review_receipt FOREIGN KEY (receipt_id) REFERENCES inbound_receipt (id),
+    CONSTRAINT fk_quarantine_review_batch FOREIGN KEY (target_batch_id) REFERENCES inbound_batch (id),
+    CONSTRAINT fk_quarantine_review_actor FOREIGN KEY (reviewed_by) REFERENCES employee_account (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
