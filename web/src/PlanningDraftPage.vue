@@ -14,7 +14,7 @@ type Group = { areaId: string | null; areaName: string | null; total: number; as
 type Worker = { id: string; displayName: string }
 type Adjustment = {
   parcelId: string; waybillNo: string; planVersion: string; oldWorkerName: string | null
-  newWorkerName: string; reason: string; changedByName: string; changedAt: string
+  newWorkerName: string | null; reason: string; changedByName: string; changedAt: string
 }
 type Draft = {
   id: string; version: string; createdBy: string; createdAt: string; evaluatedAt: string
@@ -44,6 +44,7 @@ const pendingLabels: Record<string, string> = {
   AREA_UNCONFIRMED: '片区待确认',
   NO_REGULAR_WORKER: '无常规责任人',
   REGULAR_WORKER_UNAVAILABLE: '责任人缺岗',
+  DISPATCHER_HOLD: '调度留站',
 }
 
 async function run(action: () => Promise<void>) {
@@ -144,18 +145,31 @@ function toggleGroup(group: Group) {
 }
 
 function assignSupport() {
+  if (supportWorkerId.value) return submitAdjustment({ workerId: supportWorkerId.value })
+}
+
+function holdSelected() {
+  return submitAdjustment({ action: 'HOLD' })
+}
+
+function submitAdjustment(action: { workerId: string } | { action: 'HOLD' }) {
   const current = draft.value
-  if (!current || !selected.value.length || !supportWorkerId.value || !reason.value.trim()) return
+  if (!current || !selected.value.length || !reason.value.trim()) return
+  const hold = 'action' in action
   return run(async () => {
     const csrf = await requestJson<{ headerName: string; token: string }>('/auth/csrf')
     const updated = await requestJson<Draft>(`/staff/delivery-plans/${current.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', [csrf.headerName]: csrf.token },
       body: JSON.stringify({
-        expectedVersion: current.version, parcelIds: selected.value, workerId: supportWorkerId.value, reason: reason.value,
+        ...action, expectedVersion: current.version, parcelIds: selected.value, reason: reason.value,
       }),
     })
-    status.value = updated.version === current.version ? '所选运单的拟领件人已是该配送员。' : '调整已保存。'
+    if (updated.version === current.version) {
+      status.value = hold ? '所选运单已留站。' : '所选运单的拟领件人已是该配送员。'
+    } else {
+      status.value = hold ? '留站已保存。' : '调整已保存。'
+    }
     try {
       await showDraft(updated)
     } catch (failure) {
@@ -212,7 +226,7 @@ function assignSupport() {
       <p>总数 {{ draft.total }} / 已拟派 {{ draft.assigned }} / 待安排 {{ draft.pending }}</p>
       <details v-for="group in draft.groups" :key="group.areaId ?? 'unconfirmed'" open>
         <summary>{{ group.areaName ?? '待分区' }} · 总数 {{ group.total }} / 已拟派 {{ group.assigned }} / 待安排 {{ group.pending }}</summary>
-        <button v-if="group.areaId" type="button" :disabled="busy || !workers.length" @click="toggleGroup(group)">
+        <button v-if="group.areaId" type="button" :disabled="busy" @click="toggleGroup(group)">
           {{ group.items.every(item => selected.includes(item.parcelId)) ? '取消整组选中' : '选中整组' }}
         </button>
         <table>
@@ -220,25 +234,28 @@ function assignSupport() {
           <tbody><tr v-for="item in group.items" :key="item.parcelId">
             <td>
               <input v-if="group.areaId" v-model="selected" type="checkbox" :value="item.parcelId"
-                :aria-label="`选择运单 ${item.waybillNo}`" :disabled="busy || !workers.length">
+                :aria-label="`选择运单 ${item.waybillNo}`" :disabled="busy">
             </td>
             <td>{{ item.waybillNo }}</td><td>{{ item.parcelVersion }}</td><td>{{ item.proposedWorkerName ?? '—' }}</td>
             <td>{{ item.pendingReason ? (pendingLabels[item.pendingReason] ?? item.pendingReason) : '已拟派' }}</td>
           </tr></tbody>
         </table>
       </details>
-      <h3>安排当班支援</h3>
-      <p v-if="!workers.length">该班次暂无在岗配送员。</p>
-      <form v-else @submit.prevent="assignSupport">
-        <label>当班配送员
-          <select v-model="supportWorkerId" :disabled="busy" required>
+      <h3>调整选中运单</h3>
+      <form @submit.prevent="assignSupport">
+        <label v-if="workers.length">当班配送员
+          <select v-model="supportWorkerId" :disabled="busy">
             <option value="" disabled>请选择</option>
             <option v-for="worker in workers" :key="worker.id" :value="worker.id">{{ worker.displayName }}</option>
           </select>
         </label>
+        <p v-else>该班次暂无在岗配送员。</p>
         <label>调整原因 <input v-model="reason" maxlength="500" :disabled="busy" required></label>
-        <button type="submit" :disabled="busy || !selected.length || !supportWorkerId || !reason.trim()">
+        <button v-if="workers.length" type="submit" :disabled="busy || !selected.length || !supportWorkerId || !reason.trim()">
           安排选中 {{ selected.length }} 票
+        </button>
+        <button type="button" :disabled="busy || !selected.length || !reason.trim()" @click="holdSelected">
+          留站选中 {{ selected.length }} 票
         </button>
       </form>
       <template v-if="draft.adjustments.length">
@@ -247,7 +264,7 @@ function assignSupport() {
           <thead><tr><th scope="col">运单号</th><th scope="col">前后拟领件人</th><th scope="col">原因</th><th scope="col">操作人与时间（北京时间）</th></tr></thead>
           <tbody>
             <tr v-for="change in draft.adjustments" :key="`${change.planVersion}-${change.parcelId}`">
-              <td>{{ change.waybillNo }}</td><td>{{ change.oldWorkerName ?? '待安排' }} → {{ change.newWorkerName }}</td>
+              <td>{{ change.waybillNo }}</td><td>{{ change.oldWorkerName ?? '待安排' }} → {{ change.newWorkerName ?? '调度留站' }}</td>
               <td>{{ change.reason }}</td><td>{{ change.changedByName }} · {{ time.format(change.changedAt) }}</td>
             </tr>
           </tbody>

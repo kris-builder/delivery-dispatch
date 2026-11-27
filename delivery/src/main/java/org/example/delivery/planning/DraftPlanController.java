@@ -41,9 +41,9 @@ class DraftPlanController {
     }
 
     @PatchMapping("/{id}")
-    DraftPlanStore.Detail assignSupport(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable long id,
-                                      @RequestBody DraftPlans.AdjustDraft input) {
-        return drafts.assignSupport(employee, id, input);
+    DraftPlanStore.Detail adjust(@AuthenticationPrincipal EmployeePrincipal employee, @PathVariable long id,
+                                 @RequestBody DraftPlans.AdjustDraft input) {
+        return drafts.adjust(employee, id, input);
     }
 
     @GetMapping("/{id}/support-workers")

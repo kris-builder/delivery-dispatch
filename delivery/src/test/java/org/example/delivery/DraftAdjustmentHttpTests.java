@@ -13,6 +13,8 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -190,6 +192,46 @@ class DraftAdjustmentHttpTests {
     }
 
     @Test
+    void holdsOneSelectedParcelWithoutChangingItsAreaOrCustodyAndCanRestoreIt() throws Exception {
+        try (var dispatcher = login(port, "dispatcher-zhou")) {
+            var plan = create(dispatcher);
+            var path = PLANS + "/" + plan.path("id").asText();
+            var selected = List.of(line(plan, 0).path("parcelId").asText());
+            var before = custody();
+            var held = expect(200, dispatcher.patch(path, hold("0", selected), dispatcher.csrf()));
+            assertEquals("1", held.path("version").asText());
+            assertEquals(OffsetDateTime.parse(AT), OffsetDateTime.parse(held.path("evaluatedAt").asText()));
+            assertEquals(plan.path("assigned").asInt() - 1, held.path("assigned").asInt());
+            assertEquals(plan.path("pending").asInt() + 1, held.path("pending").asInt());
+            assertEquals(east, held.path("groups").get(0).path("areaId").asText());
+            assertTrue(line(held, 0).path("proposedWorkerId").isNull());
+            assertEquals("DISPATCHER_HOLD", line(held, 0).path("pendingReason").asText());
+            assertEquals(line(plan, 1), line(held, 1));
+            var change = held.path("adjustments").get(0);
+            assertEquals(selected.getFirst(), change.path("parcelId").asText());
+            assertEquals(chen, change.path("oldWorkerId").asText());
+            assertTrue(change.path("newWorkerId").isNull());
+            assertEquals("留给下一趟", change.path("reason").asText());
+            assertEquals(plan.path("createdBy").asText(), change.path("changedBy").asText());
+            var changedAt = OffsetDateTime.parse(change.path("changedAt").asText());
+            assertEquals("+08:00", changedAt.getOffset().toString());
+            assertEquals(changedAt.toLocalDateTime(), jdbc.sql("SELECT changed_at FROM plan_adjustment WHERE plan_id = :id")
+                    .param("id", plan.path("id").asText()).query(LocalDateTime.class).single());
+            assertEquals(held, expect(200, dispatcher.get(path)));
+            assertEquals(held, expect(200, dispatcher.patch(path, hold("1", selected), dispatcher.csrf())));
+            assertEquals(1, auditCount(plan));
+
+            var restored = expect(200, dispatcher.patch(path, adjustment("1", selected, support), dispatcher.csrf()));
+            assertEquals("2", restored.path("version").asText());
+            assertEquals(support, line(restored, 0).path("proposedWorkerId").asText());
+            assertTrue(line(restored, 0).path("pendingReason").isNull());
+            assertEquals(plan.path("assigned"), restored.path("assigned"));
+            assertEquals(2, auditCount(plan));
+            assertEquals(before, custody());
+        }
+    }
+
+    @Test
     void rejectsForeignOnLeaveAndStaleParcelsWithoutPartialChanges() throws Exception {
         try (var dispatcher = login(port, "dispatcher-zhou"); var operator = login(port, "operator-xu")) {
             var plan = create(dispatcher);
@@ -211,6 +253,8 @@ class DraftAdjustmentHttpTests {
             var before = custody();
             var conflict = expect(409, dispatcher.patch(path, adjustment("0", selected, support), dispatcher.csrf()));
             assertEquals("DRAFT_PARCEL_CHANGED", conflict.path("code").asText());
+            var holdConflict = expect(409, dispatcher.patch(path, hold("0", selected), dispatcher.csrf()));
+            assertEquals("DRAFT_PARCEL_CHANGED", holdConflict.path("code").asText());
             assertEquals(plan, expect(200, dispatcher.get(path)));
             assertEquals(0, auditCount(plan));
             assertEquals(before, custody());
@@ -239,8 +283,9 @@ class DraftAdjustmentHttpTests {
         }
     }
 
-    @Test
-    void concurrentGroupAdjustmentsFromTheSameVersionCommitExactlyOnce() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void concurrentGroupAdjustmentsFromTheSameVersionCommitExactlyOnce(boolean includesHold) throws Exception {
         try (var first = login(port, "dispatcher-zhou"); var second = login(port, "dispatcher-zhou");
              var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var plan = create(first);
@@ -248,9 +293,10 @@ class DraftAdjustmentHttpTests {
             var selected = plan.path("groups").get(0).path("items").findValues("parcelId").stream()
                     .map(JsonNode::asText).toList();
             var body = adjustment("0", selected, support);
+            var competing = includesHold ? hold("0", selected) : body;
             var start = new CountDownLatch(1);
             var a = executor.submit(() -> { start.await(); return first.patch(path, body, first.csrf()); });
-            var b = executor.submit(() -> { start.await(); return second.patch(path, body, second.csrf()); });
+            var b = executor.submit(() -> { start.await(); return second.patch(path, competing, second.csrf()); });
             start.countDown();
             var responses = List.of(a.get(), b.get());
             assertEquals(List.of(200, 409), responses.stream().map(response -> response.statusCode()).sorted().toList());
@@ -258,8 +304,11 @@ class DraftAdjustmentHttpTests {
             assertEquals("DRAFT_VERSION_CONFLICT", expect(409, rejected).path("code").asText());
             var stored = expect(200, first.get(path));
             assertEquals("1", stored.path("version").asText());
-            assertTrue(stored.path("groups").get(0).path("items").findValues("proposedWorkerId").stream()
-                    .allMatch(worker -> support.equals(worker.asText())));
+            boolean holdWon = includesHold && responses.get(1).statusCode() == 200;
+            assertTrue(stored.path("groups").get(0).path("items").valueStream().allMatch(
+                    item -> holdWon
+                            ? item.path("proposedWorkerId").isNull() && "DISPATCHER_HOLD".equals(item.path("pendingReason").asText())
+                            : support.equals(item.path("proposedWorkerId").asText()) && item.path("pendingReason").isNull()));
             assertEquals(selected.size(), auditCount(plan));
         }
     }
@@ -275,6 +324,10 @@ class DraftAdjustmentHttpTests {
 
     private static Map<String, ?> adjustment(String version, List<String> parcels, String worker) {
         return Map.of("expectedVersion", version, "parcelIds", parcels, "workerId", worker, "reason", REASON);
+    }
+
+    private static Map<String, ?> hold(String version, List<String> parcels) {
+        return Map.of("action", "HOLD", "expectedVersion", version, "parcelIds", parcels, "reason", "留给下一趟");
     }
 
     private int auditCount(JsonNode plan) {
