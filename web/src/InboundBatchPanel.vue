@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { ApiError, postJson, requestJson } from './api'
 import { pendingAreaReasons, type PendingAreaReason } from './inboundAreaReasons'
 import AreaAssignmentPanel from './AreaAssignmentPanel.vue'
+import SortCreditsPanel from './SortCreditsPanel.vue'
 import demo from '../../fixtures/mvp.json'
 
 interface BatchSummary {
@@ -47,6 +48,7 @@ const queue = ref<Scan[]>([])
 const sending = ref(false)
 const blocked = ref('')
 const history = ref<{ key: string; waybill: string; message: string; failed: boolean }[]>([])
+const creditRevision = ref(0)
 const batchLocked = computed(() => scanning.value || sending.value || queue.value.length > 0)
 
 function showError(reason: unknown) {
@@ -140,6 +142,7 @@ async function sendQueued() {
   if (sending.value || blocked.value || !queue.value.length || props.dispatcher) return
   sending.value = true
   const path = `${root}/${selected.value}`
+  let creditsChanged = false
   try {
     while (queue.value.length) {
       const scan = queue.value[0]
@@ -164,6 +167,7 @@ async function sendQueued() {
         continue
       }
       addResult(scan, resultMessage(receipt))
+      creditsChanged ||= receipt.status === 'RECEIVED'
       queue.value.shift()
       try {
         detail.value = await requestJson<BatchDetail>(path, { signal: AbortSignal.timeout(5000) })
@@ -174,6 +178,7 @@ async function sendQueued() {
     }
   } finally {
     sending.value = false
+    if (creditsChanged) creditRevision.value++
   }
 }
 
@@ -184,6 +189,7 @@ function retryScan() {
 }
 
 function refreshAfterAssignment() {
+  creditRevision.value++
   return run(loadBatches)
 }
 </script>
@@ -247,6 +253,11 @@ function refreshAfterAssignment() {
       v-show="!scanning"
       :scanning="scanning"
       @assigned="refreshAfterAssignment"
+      @session-expired="emit('sessionExpired')"
+    />
+    <SortCreditsPanel
+      v-if="!dispatcher"
+      :revision="creditRevision"
       @session-expired="emit('sessionExpired')"
     />
   </section>

@@ -12,11 +12,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.IntStream;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.example.delivery.time.BeijingTime;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -68,6 +70,83 @@ class InboundReceiptTests {
         addEmployee("sorter-test", "PICKUP-DEMO-A", "PICKUP_STATION_SORTER");
         addEmployee("operator-rollback-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
         addEmployee("manual-rollback-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
+        addEmployee("credit-scanner-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
+        addEmployee("credit-assignee-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
+        addEmployee("credit-boundary-test", "JIANGAN-DEMO", "NETWORK_OPERATOR");
+    }
+
+    @Test
+    void reports87ForScannerAndCreditsManualAssignmentOnlyToTheOtherEmployee() throws Exception {
+        var baseline = IntStream.range(0, 86).mapToObj(index -> "00086" + (100 + index)).toList();
+        var lines = new java.util.ArrayList<>(baseline.stream().map(no -> line(no, "东")).toList());
+        lines.add(line("00086001", "东"));
+        lines.add(line("00086002", "未知"));
+        String batch = importBatch("CREDIT-ATTRIBUTION", lines);
+        String path = "/staff/me/sort-credits";
+        try (var scanner = login(port, "credit-scanner-test"); var assignee = login(port, "credit-assignee-test")) {
+            var csrf = scanner.csrf();
+            for (String no : baseline) {
+                expect(201, scanner.post(scan(batch), body(no), csrf, "baseline-" + no));
+            }
+            assertEquals(86, expect(200, scanner.get(path)).path("effectiveCount").asInt());
+            assertEquals(0, expect(200, assignee.get(path)).path("effectiveCount").asInt());
+            expect(201, scanner.post(scan(batch), body("00086001"), csrf, "credit-hit"));
+            expect(200, scanner.post(scan(batch), body("00086001"), csrf, "credit-repeat"));
+            expect(201, scanner.post(scan(batch), body("00086002"), csrf, "credit-pending"));
+            var afterScan = expect(200, scanner.get(path));
+            assertEquals(87, afterScan.path("effectiveCount").asInt());
+            assertEquals(87, afterScan.path("items").size());
+            assertEquals("00086001", afterScan.path("items").get(0).path("waybillNo").asText());
+            assertEquals("INBOUND_RECEIVED", afterScan.path("items").get(0).path("source").asText());
+            assertTrue(afterScan.findValues("waybillNo").stream().noneMatch(v -> "00086002".equals(v.asText())));
+            assertEquals(0, expect(200, assignee.get(path)).path("effectiveCount").asInt());
+            expect(200, assignee.post(assignment(parcelId("00086002")), Map.of("areaId", areaId("JIANGAN-DEMO", "WEST")),
+                    assignee.csrf(), "credit-fill"));
+            assertEquals(afterScan, expect(200, scanner.get(path)));
+            String scannerId = expect(200, scanner.get("/auth/session")).path("employeeId").asText();
+            var afterFill = expect(200, assignee.get(path + "?employeeId=" + scannerId));
+            assertEquals(1, afterFill.path("effectiveCount").asInt());
+            assertEquals(1, afterFill.path("items").size());
+            assertEquals("00086002", afterFill.path("items").get(0).path("waybillNo").asText());
+            assertEquals("MANUAL_AREA_ASSIGNED", afterFill.path("items").get(0).path("source").asText());
+            assertEquals("+08:00", OffsetDateTime.parse(afterFill.path("items").get(0).path("creditedAt").asText())
+                    .getOffset().toString());
+        }
+    }
+
+    @Test
+    void countsOnlyEffectiveCreditsInsideTheBeijingDayAndRequiresAnOperatorSession() throws Exception {
+        var day = BeijingTime.now().toLocalDate();
+        var numbers = List.of("00087001", "00087002", "00087003", "00087004", "00087005");
+        String batch = importBatch("CREDIT-MIDNIGHT", numbers.stream().map(no -> line(no, "东")).toList());
+        String path = "/staff/me/sort-credits";
+        try (var employee = login(port, "credit-boundary-test"); var foreign = login(port, "operator-foreign-test");
+             var dispatcher = login(port, "dispatcher-zhou"); var anonymous = new AuthHttpClient(port)) {
+            var csrf = employee.csrf();
+            var moments = List.of(day.atStartOfDay().minusNanos(1000), day.atStartOfDay(),
+                    day.plusDays(1).atStartOfDay().minusNanos(1000), day.plusDays(1).atStartOfDay(), day.atTime(8, 0));
+            for (int index = 0; index < numbers.size(); index++) {
+                String no = numbers.get(index);
+                var receipt = expect(201, employee.post(scan(batch), body(no), csrf, "midnight-" + no));
+                jdbc.sql("UPDATE sort_credit SET credited_at = :time WHERE receipt_id = :id")
+                        .param("time", moments.get(index)).param("id", receipt.path("receiptId").asText()).update();
+                if (index == 4) {
+                    jdbc.sql("UPDATE sort_credit SET void_event_id = source_event_id WHERE receipt_id = :id")
+                            .param("id", receipt.path("receiptId").asText()).update();
+                }
+            }
+            var current = expect(200, employee.get(path));
+            assertEquals(day.toString(), current.path("businessDate").asText());
+            assertEquals(2, current.path("effectiveCount").asInt());
+            assertEquals(List.of("00087003", "00087002"), current.findValues("waybillNo").stream()
+                    .map(node -> node.asText()).toList());
+            assertEquals(day + "T00:00+08:00",
+                    OffsetDateTime.parse(current.path("items").get(1).path("creditedAt").asText()).toString());
+            assertEquals(1, expect(200, employee.get(path + "?date=" + day.minusDays(1))).path("effectiveCount").asInt());
+            assertEquals(0, expect(200, foreign.get(path)).path("effectiveCount").asInt());
+            expect(403, dispatcher.get(path));
+            expect(401, anonymous.get(path));
+        }
     }
 
     @Test
